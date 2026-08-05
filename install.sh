@@ -39,8 +39,25 @@ else
   gen() { openssl rand -hex 24; }
 
   read -rp "Dominio apontando para este servidor (ex: bot.seuprovedor.com.br): " DOMAIN
-  [[ -n "$DOMAIN" ]] || die "Dominio e obrigatorio para o HTTPS (Let's Encrypt) funcionar."
-  read -rp "E-mail para o Let's Encrypt: " ACME_EMAIL
+  [[ -n "$DOMAIN" ]] || die "Dominio e obrigatorio para o HTTPS funcionar."
+
+  # Este servidor ja tem um proxy (Traefik/EasyPanel) nas portas 80/443.
+  # Em vez de disputar as portas, o n8n entra na rede dele e e publicado por ele.
+  TRAEFIK_CID=$(docker ps -qf name=traefik | head -1)
+  if [[ -n "$TRAEFIK_CID" ]]; then
+    DETECTED_NET=$(docker inspect "$TRAEFIK_CID" \
+      --format '{{range $k,$v := .NetworkSettings.Networks}}{{$k}}{{"\n"}}{{end}}' \
+      | grep -v '^$' | grep -v '^bridge$' | head -1)
+    log "Traefik detectado na rede: ${DETECTED_NET:-<nenhuma>}"
+  fi
+  read -rp "Rede do Traefik [${DETECTED_NET:-}]: " TRAEFIK_NETWORK
+  TRAEFIK_NETWORK=${TRAEFIK_NETWORK:-$DETECTED_NET}
+  [[ -n "$TRAEFIK_NETWORK" ]] || die "Sem rede do Traefik nao da para publicar o n8n."
+  read -rp "Entrypoint HTTPS do Traefik [websecure]: " TRAEFIK_ENTRYPOINT
+  TRAEFIK_ENTRYPOINT=${TRAEFIK_ENTRYPOINT:-websecure}
+  read -rp "Certresolver do Traefik [letsencrypt]: " TRAEFIK_CERTRESOLVER
+  TRAEFIK_CERTRESOLVER=${TRAEFIK_CERTRESOLVER:-letsencrypt}
+
   read -rp "URL do SGP (ex: https://seuprovedor.sgp.net.br): " SGP_API_URL
   read -rp "Token da API do SGP: " SGP_API_TOKEN
   read -rp "Appname cadastrado junto ao token no SGP: " SGP_APP_NAME
@@ -48,7 +65,11 @@ else
   cat > .env <<EOF
 # ---- gerado por install.sh em $(date -Is) ----
 DOMAIN=${DOMAIN}
-ACME_EMAIL=${ACME_EMAIL}
+
+# Proxy que ja existe no servidor e publica o n8n (nao criado por este compose)
+TRAEFIK_NETWORK=${TRAEFIK_NETWORK}
+TRAEFIK_ENTRYPOINT=${TRAEFIK_ENTRYPOINT}
+TRAEFIK_CERTRESOLVER=${TRAEFIK_CERTRESOLVER}
 
 POSTGRES_DB=botsgp
 POSTGRES_USER=botsgp

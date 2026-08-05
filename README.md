@@ -102,17 +102,22 @@ O SGP entrega `dataNascimento` em ISO (`AAAA-MM-DD`) e o cliente digita
 
 ## Subir no servidor
 
-Servidor testado: Ubuntu 24.04 limpo. **Você precisa de um domínio
-apontando para o IP do servidor antes de começar** — sem ele o Let's
-Encrypt não emite certificado, e HTTPS não é opcional aqui (trafega CPF).
+Testado em Ubuntu 24.04. **Pré-requisitos:**
+
+- Um domínio apontando para o IP do servidor. Sem domínio próprio dá para
+  usar `SEU.IP.AQUI.nip.io`, que resolve sozinho e aceita certificado.
+- Um proxy reverso já rodando (Traefik, via EasyPanel ou avulso). Este
+  stack **não sobe proxy próprio** — ele se pendura no que já existe, para
+  não disputar as portas 80/443.
 
 ```bash
-git clone <seu-repo> botSgp && cd botSgp
-sudo bash install.sh
+git clone https://github.com/GustavoAl5317/sgpChat.git && cd sgpChat
+bash install.sh
 ```
 
-O `install.sh` instala Docker, gera o `.env` com senhas aleatórias,
-configura o firewall (só 22/80/443) e sobe o stack. Depois:
+O `install.sh` instala Docker (se faltar), detecta a rede do Traefik,
+gera o `.env` com senhas aleatórias, configura o firewall e sobe o
+stack. Depois:
 
 ```bash
 bash conectar-whatsapp.sh
@@ -129,7 +134,8 @@ workflow e mande `1` para o número conectado.
 
 ### O que fica exposto na internet
 
-Só a porta 443 (Caddy → interface do n8n). Postgres, Redis e Evolution
+Nada deste stack publica porta. O n8n entra na rede do Traefik que já roda
+no servidor, e é ele quem expõe na 443. Postgres, Redis e Evolution
 API **não têm porta publicada** — conversam apenas pela rede interna do
 Docker. A Evolution chama o webhook do n8n em `http://n8n:5678`, sem sair
 para a internet.
@@ -138,10 +144,9 @@ para a internet.
 
 | Arquivo | Papel |
 |---|---|
-| [docker-compose.yml](docker-compose.yml) | Stack: Postgres, Redis, n8n, Evolution, Caddy |
+| [docker-compose.yml](docker-compose.yml) | Stack: Postgres, Redis, n8n, Evolution |
 | [install.sh](install.sh) | Provisiona o Ubuntu do zero |
 | [conectar-whatsapp.sh](conectar-whatsapp.sh) | Cria a instância e mostra o QR Code |
-| [Caddyfile](Caddyfile) | HTTPS automático, só o n8n exposto |
 | [sql/schema.sql](sql/schema.sql) | `wa_sessions` + `wa_wifi_change_log` |
 | [build-workflow.py](build-workflow.py) | **Gera** o JSON do workflow |
 | [n8n/workflow-wifi-selfservice.json](n8n/workflow-wifi-selfservice.json) | Workflow (gerado — não edite à mão) |

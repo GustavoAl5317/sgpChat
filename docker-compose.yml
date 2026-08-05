@@ -76,7 +76,17 @@ services:
       EVOLUTION_API_KEY: ${EVOLUTION_API_KEY}
     volumes:
       - n8n_data:/home/node/.n8n
-    networks: [botsgp]
+    # Fica em duas redes: a interna (fala com Postgres/Evolution) e a do
+    # Traefik do EasyPanel, que termina o TLS e publica na internet.
+    networks: [botsgp, proxy]
+    labels:
+      traefik.enable: "true"
+      traefik.docker.network: ${TRAEFIK_NETWORK}
+      traefik.http.routers.botsgp-n8n.rule: Host(`${DOMAIN}`)
+      traefik.http.routers.botsgp-n8n.entrypoints: ${TRAEFIK_ENTRYPOINT}
+      traefik.http.routers.botsgp-n8n.tls: "true"
+      traefik.http.routers.botsgp-n8n.tls.certresolver: ${TRAEFIK_CERTRESOLVER}
+      traefik.http.services.botsgp-n8n.loadbalancer.server.port: "5678"
 
   evolution:
     # O projeto migrou de atendai/ para evoapicloud/ (atendai parou no v2.2.3).
@@ -120,31 +130,22 @@ services:
       - evolution_instances:/evolution/instances
     networks: [botsgp]
 
-  caddy:
-    image: caddy:2-alpine
-    container_name: botsgp-caddy
-    restart: unless-stopped
-    ports:
-      - "80:80"
-      - "443:443"
-    environment:
-      DOMAIN: ${DOMAIN}
-      ACME_EMAIL: ${ACME_EMAIL}
-    volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy_data:/data
-      - caddy_config:/config
-    depends_on: [n8n]
-    networks: [botsgp]
-
 volumes:
   postgres_data:
   redis_data:
   n8n_data:
   evolution_instances:
-  caddy_data:
-  caddy_config:
 
 networks:
+  # Rede interna: Postgres, Redis e Evolution vivem so aqui, sem porta
+  # publicada. Ninguem alcanca de fora.
   botsgp:
     driver: bridge
+  # Rede ja existente do Traefik (EasyPanel). Nao e criada por este compose -
+  # descubra o nome com:
+  #   docker inspect $(docker ps -qf name=traefik) \
+  #     --format '{{range $k,$v := .NetworkSettings.Networks}}{{$k}}{{"\n"}}{{end}}'
+  # e coloque em TRAEFIK_NETWORK no .env.
+  proxy:
+    external: true
+    name: ${TRAEFIK_NETWORK}
