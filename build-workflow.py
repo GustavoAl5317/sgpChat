@@ -4,7 +4,10 @@ import json
 
 # ---------------------------------------------------------------- Extract
 JS_EXTRACT = r"""
-const item = $input.first().json;
+const raw = $input.first().json;
+// O node de Webhook entrega o corpo da requisicao dentro de `body`. O
+// fallback para a raiz cobre chamadas diretas ao node (testes e replay).
+const item = raw.body || raw;
 const data = item.data || {};
 const key = data.key || {};
 const remoteJid = key.remoteJid || '';

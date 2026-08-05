@@ -26,11 +26,24 @@ RESP.contratos.forEach(c => { c.cpfCnpj = '529.982.247-25'; });
 const CONTRATOS = RESP.contratos;
 const ativos = CONTRATOS.filter(c => c.contratoStatus === 1);
 
-function inbound(text, phone) {
-  return run('Extract Inbound', [{
+// Formato real capturado da Evolution v2.3.7: o n8n envelopa o corpo da
+// requisicao em `body`, e o payload da Evolution fica dentro dele.
+function payload(text, phone, extra) {
+  return { body: Object.assign({
     event: 'messages.upsert',
-    data: { key: { remoteJid: phone + '@s.whatsapp.net', fromMe: false }, message: { conversation: text } },
-  }], {});
+    instance: 'principal',
+    data: {
+      key: { remoteJid: phone + '@s.whatsapp.net', fromMe: false, id: 'ABC123' },
+      pushName: 'Fulano',
+      message: { conversation: text },
+      messageType: 'conversation',
+      source: 'ios',
+    },
+  }, extra || {}) };
+}
+
+function inbound(text, phone) {
+  return run('Extract Inbound', [payload(text, phone)], {});
 }
 
 // Um turno completo: mensagem do cliente -> resposta do bot + nova sessao.
@@ -195,11 +208,11 @@ check(t.step === 'human_handoff', 'so contratos inativos -> atendente');
 
 console.log('\n=== Mensagens ignoradas ===');
 check(inbound('oi', '5511999999999') !== null, 'mensagem privada e processada');
-const grupo = run('Extract Inbound', [{ event: 'messages.upsert',
-  data: { key: { remoteJid: '123456@g.us', fromMe: false }, message: { conversation: 'oi' } } }], {});
+const pg = payload('oi', '123456'); pg.body.data.key.remoteJid = '123456@g.us';
+const grupo = run('Extract Inbound', [pg], {});
 check(grupo === null, 'mensagem de grupo e ignorada');
-const propria = run('Extract Inbound', [{ event: 'messages.upsert',
-  data: { key: { remoteJid: '5511999999999@s.whatsapp.net', fromMe: true }, message: { conversation: 'oi' } } }], {});
+const p2 = payload('oi', '5511999999999'); p2.body.data.key.fromMe = true;
+const propria = run('Extract Inbound', [p2], {});
 check(propria === null, 'mensagem enviada pelo proprio bot e ignorada');
 
 // ======================== MODULO 4: Diagnostico ========================
