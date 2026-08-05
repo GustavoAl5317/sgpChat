@@ -716,9 +716,13 @@ SGP_AUTH = [{"name": "token", "value": "={{ $env.SGP_API_TOKEN }}"},
             {"name": "app", "value": "={{ $env.SGP_APP_NAME }}"}]
 
 nodes = [
+    # webhookId e obrigatorio: sem ele o n8n registra a rota como
+    # {workflowId}/{nome-do-node}/{path} em vez de so /webhook/{path}.
+    # A interface gera esse UUID sozinha; num JSON montado por fora, nao.
     {"parameters": {"httpMethod": "POST", "path": "evolution-inbound",
                     "responseMode": "onReceived", "options": {}},
      "id": "webhook-evolution", "name": "Webhook Evolution API",
+     "webhookId": "7f3c9e2a-5b41-4d8e-9a06-1c2f4b8d6e30",
      "type": "n8n-nodes-base.webhook", "typeVersion": 2, "position": [0, 0]},
 
     code_node("code-extract", "Extract Inbound", JS_EXTRACT, [200, 0]),

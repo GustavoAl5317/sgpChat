@@ -94,6 +94,13 @@ log "Ativando..."
 docker compose exec -T -u node n8n n8n update:workflow --id="$WF_ID" --active=true \
   || warn "o comando de ativacao falhou - ative pelo toggle na interface"
 
+# As rotas ficam materializadas em webhook_entity. Se uma importacao anterior
+# gravou um caminho errado, ele sobrevive ao restart - entao limpamos as rotas
+# deste workflow e deixamos o n8n registrar de novo a partir do JSON atual.
+log "Limpando rotas de webhook antigas..."
+docker compose exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -q \
+  -c "DELETE FROM webhook_entity WHERE \"workflowId\" = '${WF_ID}';" >/dev/null 2>&1 || true
+
 # O webhook so passa a responder depois que o n8n recarrega os workflows ativos.
 log "Reiniciando o n8n para registrar o webhook..."
 docker compose restart n8n >/dev/null

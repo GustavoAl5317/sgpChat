@@ -10,6 +10,7 @@
       },
       "id": "webhook-evolution",
       "name": "Webhook Evolution API",
+      "webhookId": "7f3c9e2a-5b41-4d8e-9a06-1c2f4b8d6e30",
       "type": "n8n-nodes-base.webhook",
       "typeVersion": 2,
       "position": [
