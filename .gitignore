@@ -1,0 +1,4 @@
+.env
+resposta-sgp.json
+*.log
+.claude/settings.local.json

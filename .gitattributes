@@ -1,0 +1,11 @@
+# Scripts e configs rodam em Linux: forcar LF.
+# Sem isso o Git no Windows entrega CRLF e o bash quebra com
+# "$'\r': command not found" ao rodar install.sh no servidor.
+*.sh        text eol=lf
+Caddyfile   text eol=lf
+*.yml       text eol=lf
+*.sql       text eol=lf
+*.py        text eol=lf
+*.js        text eol=lf
+*.json      text eol=lf
+.env.example text eol=lf
