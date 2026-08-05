@@ -74,8 +74,10 @@ else
   read -rp "Rede do Traefik [${DETECTED_NET:-}]: " TRAEFIK_NETWORK
   TRAEFIK_NETWORK=${TRAEFIK_NETWORK:-$DETECTED_NET}
   [[ -n "$TRAEFIK_NETWORK" ]] || die "Sem rede do Traefik nao da para publicar o n8n."
-  read -rp "Entrypoint HTTPS do Traefik [websecure]: " TRAEFIK_ENTRYPOINT
-  TRAEFIK_ENTRYPOINT=${TRAEFIK_ENTRYPOINT:-websecure}
+  # EasyPanel nomeia os entrypoints de "http"/"https"; o Traefik avulso
+  # costuma usar "web"/"websecure". Default no do EasyPanel.
+  read -rp "Entrypoint HTTPS do Traefik [https]: " TRAEFIK_ENTRYPOINT
+  TRAEFIK_ENTRYPOINT=${TRAEFIK_ENTRYPOINT:-https}
   read -rp "Certresolver do Traefik [letsencrypt]: " TRAEFIK_CERTRESOLVER
   TRAEFIK_CERTRESOLVER=${TRAEFIK_CERTRESOLVER:-letsencrypt}
 
