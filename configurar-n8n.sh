@@ -12,8 +12,15 @@ warn() { echo "${YLW}[!]${RST} $*"; }
 die()  { echo "${RED}[x]${RST} $*" >&2; exit 1; }
 
 [[ -f .env ]] || die ".env nao encontrado. Rode install.sh antes."
+# set -a exporta tudo que vier do .env: sem isso o Python chamado abaixo
+# nao enxerga as variaveis (source define so no shell atual).
+set -a
 # shellcheck disable=SC1091
 source .env
+set +a
+: "${POSTGRES_DB:?falta POSTGRES_DB no .env}"
+: "${POSTGRES_USER:?falta POSTGRES_USER no .env}"
+: "${POSTGRES_PASSWORD:?falta POSTGRES_PASSWORD no .env}"
 
 WF_SRC="n8n/workflow-wifi-selfservice.json"
 [[ -f "$WF_SRC" ]] || die "$WF_SRC nao encontrado."
