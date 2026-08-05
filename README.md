@@ -1,17 +1,26 @@
-# botSgp — Autoatendimento WhatsApp (Wi-Fi) via n8n + Evolution API + SGP
+# botSgp — Autoatendimento WhatsApp para ISP (n8n + Evolution API + SGP)
 
-Primeiro módulo do bot: o cliente altera **nome (SSID) e senha do próprio
-Wi-Fi** pelo WhatsApp, com validação de identidade. Serve de base para os
-próximos módulos (financeiro, boleto, suporte) e para a migração futura
-da Evolution API para a API oficial da Meta.
+Bot de autoatendimento para provedor de internet. O cliente resolve
+sozinho pelo WhatsApp, com validação de identidade em dois fatores:
+
+- **Trocar nome e senha do Wi-Fi** — aplicado no roteador via TR-069/ACS
+- **2ª via de boleto** — faturas em aberto com linha digitável e link
+- **Abrir chamado de suporte** — devolve o número do protocolo
+- **Falar com atendente** — encaminha para humano
+
+Feito para rodar hoje na Evolution API e migrar depois para a API oficial
+da Meta trocando só dois nodes.
 
 ## Status
 
 A integração com o SGP foi **verificada contra a API real** (base
 `demo.sgp.net.br`): endpoints, autenticação, nomes de campo e formato das
-respostas estão confirmados, não são suposições. O que falta é rodar
-ponta a ponta com um contrato que tenha ACS/TR-069 de verdade — a base
-demo não tem Gerenciador de CPE configurado em nenhum contrato.
+respostas estão confirmados, não são suposições. 34 testes automatizados
+rodam a máquina de estados contra respostas reais da API.
+
+O que **não** foi validado contra hardware: a aplicação efetiva do Wi-Fi
+na ONU. A base demo não tem Gerenciador de CPE em nenhum contrato, então
+o caminho de sucesso só rodou com resposta simulada.
 
 ## A API do SGP (verificado em campo)
 
@@ -34,6 +43,26 @@ Retorna `{ "msg": ..., "contratos": [ ... ] }`. Campos que o fluxo usa:
 | `dataNascimento` | **`AAAA-MM-DD`** | segundo fator |
 | `telefones[].contato` | `"(83) 98856-4565"` | confere o número do WhatsApp |
 | `cpfCnpj` | `"000.000.000-00"` | vem formatado, com pontuação |
+
+**2ª via de boleto** — `POST /api/ura/fatura2via/`
+```
+token, app, contrato (ou cpfcnpj)   (obrigatórios)
+nao_gerar_os=1                       (evita abrir uma OS a cada consulta)
+```
+Retorna `{status, razaoSocial, links: [...]}`. Cada link traz `vencimento`,
+`valor` (já com `juros` e `multa`), `valor_original`, `linhadigitavel`,
+`link` (boleto) e `link_cobranca`. `status: 0` com `links: []` significa
+nenhuma fatura em aberto.
+
+**Abrir chamado** — `POST /api/ura/chamado/` (JSON)
+```
+token, app, contrato, ocorrenciatipo   (obrigatórios)
+conteudo                                (descrição do problema)
+```
+Retorna `{status, razaoSocial, protocolo, contratoId, msg}`. O
+`ocorrenciatipo` é um código **específico do SGP de cada provedor** —
+liste os seus em `GET /api/os/ocorrencia/tipo/list/` e configure em
+`SGP_OCORRENCIA_TIPO`.
 
 **Alterar Wi-Fi** — `POST /api/ura/cpemanage/` (aceita JSON ou form-urlencoded)
 ```
@@ -61,22 +90,40 @@ consulta.
 Evolution API (webhook)
    │
    ▼
-Extract Inbound ──► Get Session ──► Parse & Route ──► Precisa chamar o SGP?
-   normaliza         (Postgres)      máquina de          │
-   o payload          estado da       estados            ├─► SGP Consultar Cliente ─► Processar Consulta CPF
-                      conversa                           ├─► SGP Definir Wifi ──────► Processar Definir Wifi
-                                                         └─► (nenhuma chamada)
-                                                                    │
-                              Preparar Persistência ◄───────────────┘
-                                       │
-                              Upsert Session ─► Tem auditoria? ─► Gravar Auditoria
-                                                                          │
-                                                        Evolution: Enviar Resposta
+Extract Inbound ─► Get Session ─► Parse & Route ─► Precisa chamar o SGP?
+  normaliza        (Postgres)     máquina de         │
+  o payload        estado da      estados            ├─► Consultar Cliente ─► Processar CPF ─► Buscar faturas agora?
+                   conversa                          │                                          ├─► Segunda Via ─┐
+                                                     │                                          └───────────────┼─┐
+                                                     ├─► Definir Wifi ────► Processar Wifi ────────────────────┼─┤
+                                                     ├─► Abrir Chamado ───► Processar Chamado ─────────────────┼─┤
+                                                     └─► (nenhuma chamada) ────────────────────────────────────┴─┤
+                                                                                                                 │
+                                          Preparar Persistência ◄─────────────────────────────────────────────────┘
+                                                    │
+                                          Upsert Session ─► Tem auditoria? ─► Gravar Auditoria
+                                                                                      │
+                                                                    Evolution: Enviar Resposta
 ```
 
+O switch **"Buscar faturas agora?"** existe porque o módulo financeiro
+precisa de duas chamadas ao SGP no mesmo turno: confirmar a identidade e,
+já de posse do contrato, buscar as faturas — sem obrigar o cliente a
+mandar outra mensagem no meio.
+
+Menu: **1** Wi-Fi · **2** 2ª via de boleto · **3** abrir chamado ·
+**4** atendente humano.
+
 Estados: `menu` → `awaiting_cpf` → (`awaiting_contract_choice`) →
-(`awaiting_second_factor`) → `awaiting_ssid` → `awaiting_password` → `menu`.
-Digitar `menu`, `0`, `voltar` ou `sair` reinicia a qualquer momento.
+(`awaiting_second_factor`) → e daí depende do que o cliente pediu:
+
+| Opção | Depois da identidade |
+|---|---|
+| 1 Wi-Fi | `awaiting_ssid` → `awaiting_password` → aplica no roteador |
+| 2 Boleto | busca as faturas e responde na hora |
+| 3 Suporte | `awaiting_support_desc` → abre chamado e devolve o protocolo |
+
+Digitar `menu`, `0`, `voltar`, `início` ou `sair` reinicia a qualquer momento.
 
 O estado fica no Postgres (tabela `wa_sessions`) porque cada mensagem do
 WhatsApp dispara uma execução independente do workflow — não há memória
@@ -85,7 +132,9 @@ entre elas.
 ## Validação de identidade (dois fatores)
 
 CPF não é segredo — vazou em diversos incidentes no Brasil. Por isso o
-CPF sozinho não libera a alteração:
+CPF sozinho não libera nada, e **os três módulos passam pela mesma
+validação** (boleto e chamado expõem dado financeiro e pessoal, então não
+podiam ter porta dos fundos):
 
 1. **CPF/CNPJ** com verificação de dígito (aceita os dois; contratos PJ
    existem). 3 erros → atendimento humano.
@@ -120,11 +169,19 @@ gera o `.env` com senhas aleatórias, configura o firewall e sobe o
 stack. Depois:
 
 ```bash
-bash conectar-whatsapp.sh
+bash publicar-no-traefik.sh
 ```
 
-Isso cria a instância na Evolution e mostra o QR Code no terminal para
-parear o WhatsApp.
+Isso publica o n8n e o **Manager da Evolution** no Traefik. O Manager é
+como a empresa pareia o WhatsApp sem precisar de acesso ao servidor: a
+pessoa abre `https://evolution.SEU_DOMINIO/manager`, informa a API Key,
+clica na instância e escaneia o QR pelo celular.
+
+Se preferir parear você mesmo pelo terminal:
+
+```bash
+apt-get install -y qrencode && bash conectar-whatsapp.sh
+```
 
 Por fim, no n8n (`https://SEU_DOMINIO`): importe
 [n8n/workflow-wifi-selfservice.json](n8n/workflow-wifi-selfservice.json),
@@ -177,6 +234,14 @@ curl -s -X POST "$SGP_API_URL/api/ura/consultacliente/" -H "Content-Type: applic
   O caminho de sucesso (`success: true`) foi exercitado só com resposta
   simulada. O primeiro teste com hardware real é obrigatório antes de
   liberar para clientes.
+- **Financeiro é somente leitura.** O bot mostra as faturas em aberto
+  (no máximo 3, da mais antiga para a mais nova) e a linha digitável.
+  Deliberadamente **não** expus os endpoints de liquidar, cancelar,
+  estornar ou pagar com cartão — são operações financeiras que um
+  autoatendimento não deve executar sozinho.
+- **PIX não implementado.** Existe `POST /api/ura/pagamento/pix/{fatura}`,
+  mas a base demo não tem PIX configurado, então não consegui verificar o
+  formato da resposta. Fácil de plugar depois.
 - **2.4GHz e 5GHz recebem o mesmo nome e senha.** É o comportamento que a
   maioria dos provedores adota (band steering). Se você quiser sufixo
   `-5G`, mude no node `SGP - Definir Wifi`.

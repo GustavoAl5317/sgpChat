@@ -85,6 +85,17 @@ else
   read -rp "Token da API do SGP: " SGP_API_TOKEN
   read -rp "Appname cadastrado junto ao token no SGP: " SGP_APP_NAME
 
+  # Codigo do tipo de ocorrencia para os chamados abertos pelo bot.
+  # Varia por provedor - lista os disponiveis para o usuario escolher.
+  echo "Buscando os tipos de ocorrencia do seu SGP..."
+  curl -s -m 15 -G "${SGP_API_URL}/api/os/ocorrencia/tipo/list/"        --data-urlencode "token=${SGP_API_TOKEN}" --data-urlencode "app=${SGP_APP_NAME}"     | python3 -c "import json,sys
+try:
+    for o in json.load(sys.stdin):
+        if o.get('ativo'): print('      id=%-4s %s' % (o['id'], o['descricao']))
+except Exception: print('      (nao consegui listar - confira token/appname)')" 2>/dev/null || true
+  read -rp "ID do tipo de ocorrencia para chamados do bot [1]: " SGP_OCORRENCIA_TIPO
+  SGP_OCORRENCIA_TIPO=${SGP_OCORRENCIA_TIPO:-1}
+
   cat > .env <<EOF
 # ---- gerado por install.sh em $(date -Is) ----
 DOMAIN=${DOMAIN}
@@ -109,6 +120,7 @@ EVOLUTION_API_KEY=$(gen)
 SGP_API_URL=${SGP_API_URL}
 SGP_API_TOKEN=${SGP_API_TOKEN}
 SGP_APP_NAME=${SGP_APP_NAME}
+SGP_OCORRENCIA_TIPO=${SGP_OCORRENCIA_TIPO}
 EOF
   chmod 600 .env
   log ".env criado (permissao 600)."

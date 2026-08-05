@@ -1,7 +1,8 @@
 # Gera o workflow n8n a partir dos blocos de codigo JS (evita escapar JSON na mao).
-# Rode:  python build-workflow.py
+# Rode:  python3 build-workflow.py
 import json
 
+# ---------------------------------------------------------------- Extract
 JS_EXTRACT = r"""
 const item = $input.first().json;
 const data = item.data || {};
@@ -19,13 +20,15 @@ const text = (
 ).trim();
 
 // Ignora o que nao for mensagem de texto vinda do cliente (ack, status, msg propria)
-if (item.event !== 'messages.upsert' || fromMe || !phone || !text) {
+// e conversas de grupo (o bot atende so no privado).
+if (item.event !== 'messages.upsert' || fromMe || !phone || !text || remoteJid.endsWith('@g.us')) {
   return [];
 }
 
 return [{ json: { phone, text } }];
 """
 
+# ---------------------------------------------------------------- Parse & Route
 JS_PARSE_ROUTE = r"""
 const inbound = $('Extract Inbound').first().json;
 const rows = $input.all();
@@ -86,7 +89,27 @@ function normDate(v) {
   return s.replace(/\D/g, '');
 }
 
-const MENU = 'Ola! Sou o atendimento automatico.\n\n*1* - Alterar nome/senha do Wi-Fi\n*2* - Financeiro / 2a via de boleto\n*3* - Suporte tecnico\n*4* - Falar com atendente\n\nDigite o numero da opcao desejada.';
+const MENU = 'Ola! Sou o atendimento automatico.\n\n' +
+  '*1* - Alterar nome/senha do Wi-Fi\n' +
+  '*2* - 2a via de boleto\n' +
+  '*3* - Abrir chamado de suporte\n' +
+  '*4* - Falar com atendente\n\n' +
+  'Digite o numero da opcao desejada.';
+
+// Depois que a identidade e confirmada, para onde vai depende do que o
+// cliente escolheu no menu. Centralizado aqui para os tres modulos usarem
+// exatamente a mesma validacao.
+function aposIdentidade(intent) {
+  if (intent === 'financeiro') {
+    return { sgp_action: 'segunda_via', next_step: 'menu', reply_text: null };
+  }
+  if (intent === 'suporte') {
+    return { sgp_action: 'none', next_step: 'awaiting_support_desc',
+             reply_text: 'Descreva o problema que voce esta enfrentando (em uma mensagem):' };
+  }
+  return { sgp_action: 'none', next_step: 'awaiting_ssid',
+           reply_text: 'Qual sera o novo nome (SSID) da sua rede Wi-Fi?' };
+}
 
 let reply_text = null;
 let next_step = step;
@@ -95,7 +118,7 @@ let sgp_action = 'none';
 let sgp_payload = {};
 
 // "menu" digitado a qualquer momento reinicia o atendimento
-if (/^(menu|sair|voltar|0)$/i.test(text) && step !== 'menu') {
+if (/^(menu|sair|voltar|inicio|0)$/i.test(text) && step !== 'menu') {
   return [{ json: { phone, text, step, session,
     reply_text: MENU, next_step: 'menu',
     session_patch: { reset: true }, sgp_action: 'none', sgp_payload: {} } }];
@@ -103,13 +126,14 @@ if (/^(menu|sair|voltar|0)$/i.test(text) && step !== 'menu') {
 
 switch (step) {
   case 'menu': {
-    if (text === '1') {
+    if (['1', '2', '3'].includes(text)) {
+      const intent = text === '1' ? 'wifi' : (text === '2' ? 'financeiro' : 'suporte');
       reply_text = 'Para sua seguranca, informe o CPF/CNPJ do titular da conta (somente numeros):';
       next_step = 'awaiting_cpf';
-      session_patch = { attempts: 0 };
-    } else if (['2', '3', '4'].includes(text)) {
-      reply_text = 'Essa opcao ainda esta em construcao. Digite *1* para alterar seu Wi-Fi.';
-      next_step = 'menu';
+      session_patch = { attempts: 0, intent: intent };
+    } else if (text === '4') {
+      reply_text = 'Certo! Vou te transferir para um atendente humano. Aguarde um momento.';
+      next_step = 'human_handoff';
     } else {
       reply_text = MENU;
       next_step = 'menu';
@@ -151,8 +175,11 @@ switch (step) {
         next_step = 'awaiting_second_factor';
         session_patch.attempts = 0;
       } else {
-        reply_text = 'Contrato selecionado. Qual sera o novo nome (SSID) da sua rede Wi-Fi?';
-        next_step = 'awaiting_ssid';
+        const d = aposIdentidade(session.intent);
+        reply_text = d.reply_text;
+        next_step = d.next_step;
+        sgp_action = d.sgp_action;
+        if (d.sgp_action === 'segunda_via') sgp_payload = { contrato: esc.contrato };
       }
     }
     break;
@@ -162,8 +189,11 @@ switch (step) {
     const alvo = normDate(session.second_factor_target);
     const resp = normDate(text);
     if (alvo && resp && alvo === resp) {
-      reply_text = 'Confirmado! Qual sera o novo nome (SSID) da sua rede Wi-Fi?';
-      next_step = 'awaiting_ssid';
+      const d = aposIdentidade(session.intent);
+      reply_text = d.reply_text;
+      next_step = d.next_step;
+      sgp_action = d.sgp_action;
+      if (d.sgp_action === 'segunda_via') sgp_payload = { contrato: session.contrato };
       session_patch = { attempts: 0, second_factor_target: undefined, second_factor_pending: undefined };
     } else {
       const n = attempts + 1;
@@ -180,6 +210,7 @@ switch (step) {
     break;
   }
 
+  // ---------------- Modulo 1: Wi-Fi ----------------
   case 'awaiting_ssid': {
     // SSID: 1-32 chars, sem caracteres de controle
     if (text.length < 1 || text.length > 32) {
@@ -211,6 +242,21 @@ switch (step) {
     break;
   }
 
+  // ---------------- Modulo 3: Suporte ----------------
+  case 'awaiting_support_desc': {
+    if (text.length < 10) {
+      reply_text = 'Preciso de um pouco mais de detalhe para abrir o chamado (minimo 10 caracteres). Descreva o problema:';
+      next_step = 'awaiting_support_desc';
+    } else if (text.length > 1000) {
+      reply_text = 'Descricao muito longa. Resuma em ate 1000 caracteres:';
+      next_step = 'awaiting_support_desc';
+    } else {
+      sgp_action = 'abrir_chamado';
+      sgp_payload = { contrato: session.contrato, conteudo: text };
+    }
+    break;
+  }
+
   case 'human_handoff': {
     reply_text = 'Voce esta na fila de atendimento humano. Em breve alguem falara com voce por aqui.\n\nDigite *menu* para voltar ao inicio.';
     next_step = 'human_handoff';
@@ -226,14 +272,32 @@ switch (step) {
 return [{ json: { phone, text, step, session, reply_text, next_step, session_patch, sgp_action, sgp_payload } }];
 """
 
+# ---------------------------------------------------------------- Consulta CPF
 JS_PROC_CPF = r"""
 const prev = $('Parse & Route').first().json;
 const resp = $input.first().json;
 
 let reply_text, next_step;
+let sgp_action = 'none';
+let sgp_payload = {};
 const session_patch = Object.assign({}, prev.session_patch);
+const intent = (prev.session_patch && prev.session_patch.intent) || prev.session.intent || 'wifi';
 
 function last8(v) { return String(v || '').replace(/\D/g, '').slice(-8); }
+
+// Mesma decisao usada no Parse & Route: identidade confirmada -> para onde vai.
+function aposIdentidade(it, contrato) {
+  if (it === 'financeiro') {
+    return { sgp_action: 'segunda_via', next_step: 'menu', reply_text: null,
+             sgp_payload: { contrato: contrato } };
+  }
+  if (it === 'suporte') {
+    return { sgp_action: 'none', next_step: 'awaiting_support_desc', sgp_payload: {},
+             reply_text: 'Descreva o problema que voce esta enfrentando (em uma mensagem):' };
+  }
+  return { sgp_action: 'none', next_step: 'awaiting_ssid', sgp_payload: {},
+           reply_text: 'Qual sera o novo nome (SSID) da sua rede Wi-Fi?' };
+}
 
 // Resposta do SGP: { msg, contratos: [ ... ] }
 const contratos = Array.isArray(resp && resp.contratos) ? resp.contratos : [];
@@ -241,7 +305,7 @@ const contratos = Array.isArray(resp && resp.contratos) ? resp.contratos : [];
 const ativos = contratos.filter(function (c) { return c.contratoStatus === 1; });
 
 if (contratos.length === 0) {
-  reply_text = 'Nao encontrei nenhum contrato com esse CPF. Confira o numero ou digite *4* para falar com um atendente.';
+  reply_text = 'Nao encontrei nenhum contrato com esse CPF/CNPJ. Confira o numero ou digite *4* para falar com um atendente.';
   next_step = 'menu';
 } else if (ativos.length === 0) {
   reply_text = 'Localizei seu cadastro, mas nao ha contrato ativo no momento. Vou te transferir para um atendente.';
@@ -263,17 +327,29 @@ if (contratos.length === 0) {
   } else {
     // Cliente com mais de um contrato ativo: precisa escolher qual
     session_patch.contract_options = ativos.slice(0, 9).map(function (c) {
-      return { contrato: c.contratoId, label: (c.servico_plano || c.planointernet || 'Plano') + ' - ' + (c.endereco_logradouro || '') + ' ' + (c.endereco_numero || '') };
+      return { contrato: c.contratoId,
+               label: (c.servico_plano || c.planointernet || 'Plano') + ' - ' +
+                      (c.endereco_logradouro || '') + ' ' + (c.endereco_numero || '') };
     });
   }
 
+  const listaContratos = function () {
+    return 'Voce tem mais de um contrato ativo. Qual deles?\n\n' +
+      session_patch.contract_options.map(function (o, i) { return '*' + (i + 1) + '* - ' + o.label; }).join('\n');
+  };
+
   if (telefoneBate) {
     if (ativos.length === 1) {
-      reply_text = 'CPF confirmado' + (ref.razaoSocial ? ', ' + ref.razaoSocial : '') + '! Qual sera o novo nome (SSID) da sua rede Wi-Fi?';
-      next_step = 'awaiting_ssid';
+      const d = aposIdentidade(intent, ref.contratoId);
+      reply_text = d.reply_text;
+      next_step = d.next_step;
+      sgp_action = d.sgp_action;
+      sgp_payload = d.sgp_payload;
+      if (d.reply_text && intent === 'wifi') {
+        reply_text = 'Confirmado' + (ref.razaoSocial ? ', ' + ref.razaoSocial : '') + '! ' + d.reply_text;
+      }
     } else {
-      reply_text = 'Voce tem mais de um contrato ativo. Qual deles?\n\n' +
-        session_patch.contract_options.map(function (o, i) { return '*' + (i + 1) + '* - ' + o.label; }).join('\n');
+      reply_text = listaContratos();
       next_step = 'awaiting_contract_choice';
     }
   } else {
@@ -290,16 +366,19 @@ if (contratos.length === 0) {
     } else {
       session_patch.second_factor_target = nasc;
       session_patch.second_factor_pending = true;
-      reply_text = 'Voce tem mais de um contrato ativo. Qual deles?\n\n' +
-        session_patch.contract_options.map(function (o, i) { return '*' + (i + 1) + '* - ' + o.label; }).join('\n');
+      reply_text = listaContratos();
       next_step = 'awaiting_contract_choice';
     }
   }
 }
 
-return [{ json: Object.assign({}, prev, { reply_text: reply_text, next_step: next_step, session_patch: session_patch }) }];
+return [{ json: Object.assign({}, prev, {
+  reply_text: reply_text, next_step: next_step, session_patch: session_patch,
+  sgp_action: sgp_action, sgp_payload: sgp_payload,
+}) }];
 """
 
+# ---------------------------------------------------------------- Wi-Fi
 JS_PROC_WIFI = r"""
 const prev = $('Parse & Route').first().json;
 const resp = $input.first().json;
@@ -312,13 +391,9 @@ const sucesso = !!(resp && resp.success === true);
 
 if (sucesso) {
   reply_text = 'Pronto! Sua rede Wi-Fi foi atualizada:\n\n*Nome:* ' + prev.sgp_payload.ssid +
-    '\n\nO roteador pode levar alguns minutos para aplicar. Seus aparelhos vao precisar conectar de novo com a nova senha.';
+    '\n\nO roteador pode levar alguns minutos para aplicar. Seus aparelhos vao precisar conectar de novo com a nova senha.\n\nDigite *menu* se precisar de mais alguma coisa.';
   next_step = 'menu';
-  // limpa dados sensiveis da sessao
-  session_patch.cpf = undefined;
-  session_patch.contrato = undefined;
-  session_patch.ssid_new = undefined;
-  session_patch.nome = undefined;
+  session_patch.reset = true;
 } else {
   const msg = (resp && resp.msg) ? String(resp.msg) : '';
   if (/Gerenciador de CPE/i.test(msg)) {
@@ -335,6 +410,7 @@ return [{ json: Object.assign({}, prev, {
   next_step: next_step,
   session_patch: session_patch,
   _audit: {
+    tipo: 'wifi',
     phone: prev.phone,
     cpf: prev.session.cpf,
     contrato: prev.sgp_payload.contrato,
@@ -345,10 +421,122 @@ return [{ json: Object.assign({}, prev, {
 }) }];
 """
 
+# ---------------------------------------------------------------- Financeiro
+JS_PROC_FATURA = r"""
+const prev = $('Parse & Route').first().json;
+const resp = $input.first().json;
+
+// Resposta do SGP: { status, razaoSocial, links: [ {fatura, vencimento, valor,
+// valor_original, linhadigitavel, link, link_cobranca, juros, multa} ] }
+const links = Array.isArray(resp && resp.links) ? resp.links : [];
+
+function brl(v) {
+  const n = Number(v || 0);
+  return 'R$ ' + n.toFixed(2).replace('.', ',');
+}
+function dataBR(iso) {
+  const m = String(iso || '').match(/^(\d{4})-(\d{2})-(\d{2})/);
+  return m ? (m[3] + '/' + m[2] + '/' + m[1]) : String(iso || '');
+}
+
+let reply_text, next_step = 'menu';
+
+if (!links.length) {
+  reply_text = 'Boa noticia: voce nao tem nenhuma fatura em aberto no momento.\n\nDigite *menu* para voltar ao inicio.';
+} else {
+  // Mais antigas primeiro (as vencidas importam mais). Limita a 3 para nao
+  // despejar uma parede de texto - base real pode ter dezenas de titulos.
+  const ordenados = links.slice().sort(function (a, b) {
+    return String(a.vencimento || '').localeCompare(String(b.vencimento || ''));
+  });
+  const mostrar = ordenados.slice(0, 3);
+
+  const blocos = mostrar.map(function (f) {
+    let t = '*Vencimento:* ' + dataBR(f.vencimento) + '\n*Valor:* ' + brl(f.valor);
+    if (Number(f.juros || 0) > 0 || Number(f.multa || 0) > 0) {
+      t += '  _(ja com juros e multa)_';
+    }
+    if (f.linhadigitavel) t += '\n*Linha digitavel:*\n`' + f.linhadigitavel + '`';
+    if (f.link) t += '\n' + f.link;
+    return t;
+  });
+
+  reply_text = (links.length > 3
+      ? 'Voce tem *' + links.length + '* faturas em aberto. Mostrando as ' + mostrar.length + ' mais antigas:\n\n'
+      : (links.length === 1 ? 'Aqui esta sua fatura em aberto:\n\n'
+                            : 'Voce tem *' + links.length + '* faturas em aberto:\n\n'))
+    + blocos.join('\n\n---\n\n')
+    + '\n\nDigite *menu* para voltar ao inicio.';
+
+  if (links.length > 3) {
+    reply_text += '\n_Para ver todas, fale com um atendente (opcao 4)._';
+  }
+}
+
+const session_patch = Object.assign({}, prev.session_patch, { reset: true });
+
+return [{ json: Object.assign({}, prev, {
+  reply_text: reply_text,
+  next_step: next_step,
+  session_patch: session_patch,
+  _audit: {
+    tipo: 'segunda_via',
+    phone: prev.phone,
+    cpf: prev.session.cpf,
+    contrato: prev.sgp_payload.contrato,
+    ssid_novo: null,
+    sucesso: links.length > 0,
+    // Nao guarda linha digitavel nem link no log de auditoria: sao dados de
+    // pagamento. So o suficiente para rastrear a consulta.
+    resposta_sgp: { status: resp && resp.status, qtd_faturas: links.length },
+  },
+}) }];
+"""
+
+# ---------------------------------------------------------------- Suporte
+JS_PROC_CHAMADO = r"""
+const prev = $('Parse & Route').first().json;
+const resp = $input.first().json;
+
+// Resposta do SGP: { status, razaoSocial, protocolo, cpfCnpj, contratoId, msg }
+const protocolo = resp && resp.protocolo;
+let reply_text, next_step;
+
+if (protocolo) {
+  reply_text = 'Chamado aberto com sucesso!\n\n*Protocolo:* ' + protocolo +
+    '\n\nNossa equipe vai analisar e entrar em contato. Guarde esse numero para acompanhar.\n\n' +
+    'Digite *menu* para voltar ao inicio.';
+  next_step = 'menu';
+} else {
+  const msg = (resp && resp.msg) ? String(resp.msg) : '';
+  reply_text = 'Nao consegui abrir o chamado automaticamente' + (msg ? ' (' + msg + ')' : '') +
+    '. Vou te transferir para um atendente.';
+  next_step = 'human_handoff';
+}
+
+const session_patch = Object.assign({}, prev.session_patch, { reset: true });
+
+return [{ json: Object.assign({}, prev, {
+  reply_text: reply_text,
+  next_step: next_step,
+  session_patch: session_patch,
+  _audit: {
+    tipo: 'chamado',
+    phone: prev.phone,
+    cpf: prev.session.cpf,
+    contrato: prev.sgp_payload.contrato,
+    ssid_novo: protocolo ? ('protocolo:' + protocolo) : null,
+    sucesso: !!protocolo,
+    resposta_sgp: resp,
+  },
+}) }];
+"""
+
+# ---------------------------------------------------------------- Persistencia
 JS_PERSIST = r"""
 const item = $input.first().json;
 const patch = item.session_patch || {};
-// patch.reset limpa a sessao inteira (cliente digitou "menu")
+// patch.reset limpa a sessao inteira (fim de atendimento ou cliente digitou "menu")
 const merged = patch.reset ? {} : Object.assign({}, item.session || {}, patch);
 delete merged.reset;
 Object.keys(merged).forEach(function (k) { if (merged[k] === undefined) delete merged[k]; });
@@ -366,172 +554,197 @@ return [{
 
 
 def code_node(node_id, name, js, pos):
-    return {
-        "parameters": {"jsCode": js.strip()},
-        "id": node_id, "name": name,
-        "type": "n8n-nodes-base.code", "typeVersion": 2, "position": pos,
-    }
+    return {"parameters": {"jsCode": js.strip()}, "id": node_id, "name": name,
+            "type": "n8n-nodes-base.code", "typeVersion": 2, "position": pos}
+
+
+def cond(left, right):
+    return {"options": {"caseSensitive": True, "leftValue": "", "typeValidation": "strict"},
+            "conditions": [{"leftValue": left, "rightValue": right,
+                            "operator": {"type": "string", "operation": "equals"}}],
+            "combinator": "and"}
 
 
 PG_CRED = {"postgres": {"id": "REPLACE_ME", "name": "Postgres - botSgp"}}
+SGP_AUTH = [{"name": "token", "value": "={{ $env.SGP_API_TOKEN }}"},
+            {"name": "app", "value": "={{ $env.SGP_APP_NAME }}"}]
 
 nodes = [
-    {
-        "parameters": {"httpMethod": "POST", "path": "evolution-inbound",
-                       "responseMode": "onReceived", "options": {}},
-        "id": "webhook-evolution", "name": "Webhook Evolution API",
-        "type": "n8n-nodes-base.webhook", "typeVersion": 2, "position": [0, 0],
-    },
+    {"parameters": {"httpMethod": "POST", "path": "evolution-inbound",
+                    "responseMode": "onReceived", "options": {}},
+     "id": "webhook-evolution", "name": "Webhook Evolution API",
+     "type": "n8n-nodes-base.webhook", "typeVersion": 2, "position": [0, 0]},
+
     code_node("code-extract", "Extract Inbound", JS_EXTRACT, [200, 0]),
-    {
-        "parameters": {
-            "operation": "executeQuery",
-            "query": "SELECT step, data FROM wa_sessions WHERE phone = $1",
-            "options": {"queryReplacement": "={{ [$json.phone] }}"},
-        },
-        "id": "pg-get", "name": "Get Session",
-        "type": "n8n-nodes-base.postgres", "typeVersion": 2.4,
-        "position": [400, 0], "credentials": PG_CRED,
-    },
+
+    {"parameters": {"operation": "executeQuery",
+                    "query": "SELECT step, data FROM wa_sessions WHERE phone = $1",
+                    "options": {"queryReplacement": "={{ [$json.phone] }}"}},
+     "id": "pg-get", "name": "Get Session", "type": "n8n-nodes-base.postgres",
+     "typeVersion": 2.4, "position": [400, 0], "credentials": PG_CRED},
+
     code_node("code-route", "Parse & Route", JS_PARSE_ROUTE, [600, 0]),
-    {
-        "parameters": {
-            "rules": {"values": [
-                {"conditions": {"options": {"caseSensitive": True, "leftValue": "", "typeValidation": "strict"},
-                                "conditions": [{"leftValue": "={{ $json.sgp_action }}", "rightValue": "lookup_cpf",
-                                                "operator": {"type": "string", "operation": "equals"}}],
-                                "combinator": "and"},
-                 "renameOutput": True, "outputKey": "lookup_cpf"},
-                {"conditions": {"options": {"caseSensitive": True, "leftValue": "", "typeValidation": "strict"},
-                                "conditions": [{"leftValue": "={{ $json.sgp_action }}", "rightValue": "definir_wifi",
-                                                "operator": {"type": "string", "operation": "equals"}}],
-                                "combinator": "and"},
-                 "renameOutput": True, "outputKey": "definir_wifi"},
-            ]},
-            "options": {"fallbackOutput": "extra", "renameFallbackOutput": "sem_chamada"},
-        },
-        "id": "switch-action", "name": "Precisa chamar o SGP?",
-        "type": "n8n-nodes-base.switch", "typeVersion": 3.2, "position": [800, 0],
-    },
-    # ---- SGP: consulta cliente por CPF ----
-    {
-        "parameters": {
-            "method": "POST",
-            "url": "={{ $env.SGP_API_URL }}/api/ura/consultacliente/",
-            "sendBody": True, "specifyBody": "json",
-            "jsonBody": "={{ JSON.stringify({ app: $env.SGP_APP_NAME, token: $env.SGP_API_TOKEN, cpfcnpj: $json.sgp_payload.cpf }) }}",
-            "options": {"response": {"response": {"neverError": True}}, "timeout": 20000},
-        },
-        "id": "http-lookup", "name": "SGP - Consultar Cliente",
-        "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2, "position": [1000, -160],
-    },
-    code_node("code-proc-cpf", "Processar Consulta CPF", JS_PROC_CPF, [1200, -160]),
-    # ---- SGP: define wifi (2.4GHz + 5GHz com o mesmo nome/senha) ----
-    {
-        "parameters": {
-            "method": "POST",
-            "url": "={{ $env.SGP_API_URL }}/api/ura/cpemanage/",
-            "sendBody": True, "contentType": "form-urlencoded",
-            "bodyParameters": {"parameters": [
-                {"name": "token", "value": "={{ $env.SGP_API_TOKEN }}"},
-                {"name": "app", "value": "={{ $env.SGP_APP_NAME }}"},
-                {"name": "contrato", "value": "={{ $json.sgp_payload.contrato }}"},
-                {"name": "novo_ssid", "value": "={{ $json.sgp_payload.ssid }}"},
-                {"name": "nova_senha", "value": "={{ $json.sgp_payload.senha }}"},
-                {"name": "novo_ssid_5g", "value": "={{ $json.sgp_payload.ssid }}"},
-                {"name": "nova_senha_5g", "value": "={{ $json.sgp_payload.senha }}"},
-            ]},
-            "options": {"response": {"response": {"neverError": True}}, "timeout": 30000},
-        },
-        "id": "http-wifi", "name": "SGP - Definir Wifi (CPE Manage)",
-        "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2, "position": [1000, 160],
-    },
-    code_node("code-proc-wifi", "Processar Definir Wifi", JS_PROC_WIFI, [1200, 160]),
-    code_node("code-persist", "Preparar Persistencia", JS_PERSIST, [1400, 0]),
-    {
-        "parameters": {
-            "operation": "executeQuery",
-            "query": ("INSERT INTO wa_sessions (phone, step, data, updated_at)\n"
-                      "VALUES ($1, $2, $3::jsonb, now())\n"
-                      "ON CONFLICT (phone) DO UPDATE\n"
-                      "  SET step = EXCLUDED.step, data = EXCLUDED.data, updated_at = now();"),
-            "options": {"queryReplacement": "={{ [$json.phone, $json.step, $json.data] }}"},
-        },
-        "id": "pg-upsert", "name": "Upsert Session",
-        "type": "n8n-nodes-base.postgres", "typeVersion": 2.4,
-        "position": [1600, 0], "credentials": PG_CRED,
-    },
-    {
-        "parameters": {
-            "conditions": {"options": {"caseSensitive": True, "leftValue": "", "typeValidation": "loose"},
-                           "conditions": [{"leftValue": "={{ $('Preparar Persistencia').first().json.audit }}",
-                                           "rightValue": "",
-                                           "operator": {"type": "string", "operation": "notEmpty", "singleValue": True}}],
-                           "combinator": "and"},
-            "options": {},
-        },
-        "id": "if-audit", "name": "Tem auditoria?",
-        "type": "n8n-nodes-base.if", "typeVersion": 2.2, "position": [1800, 0],
-    },
-    {
-        "parameters": {
-            "operation": "executeQuery",
-            "query": ("INSERT INTO wa_wifi_change_log (phone, cpf, contrato_id, ssid_novo, sucesso, resposta_sgp)\n"
-                      "SELECT a->>'phone', a->>'cpf', a->>'contrato', a->>'ssid_novo',\n"
-                      "       (a->>'sucesso')::boolean, a->'resposta_sgp'\n"
-                      "FROM (SELECT $1::jsonb AS a) t;"),
-            "options": {"queryReplacement": "={{ [$('Preparar Persistencia').first().json.audit] }}"},
-        },
-        "id": "pg-audit", "name": "Gravar Auditoria",
-        "type": "n8n-nodes-base.postgres", "typeVersion": 2.4,
-        "position": [2000, -120], "credentials": PG_CRED,
-    },
-    {
-        "parameters": {
-            "method": "POST",
-            "url": "={{ $env.EVOLUTION_API_URL }}/message/sendText/{{ $env.EVOLUTION_INSTANCE }}",
-            "sendBody": True, "specifyBody": "json",
-            "jsonBody": "={{ JSON.stringify({ number: $('Preparar Persistencia').first().json.phone, text: $('Preparar Persistencia').first().json.reply_text }) }}",
-            "sendHeaders": True,
-            "headerParameters": {"parameters": [{"name": "apikey", "value": "={{ $env.EVOLUTION_API_KEY }}"}]},
-            "options": {"timeout": 20000},
-        },
-        "id": "http-send", "name": "Evolution - Enviar Resposta",
-        "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2, "position": [2200, 0],
-    },
+
+    # Switch principal: o que a mensagem do cliente disparou
+    {"parameters": {"rules": {"values": [
+        {"conditions": cond("={{ $json.sgp_action }}", "lookup_cpf"),
+         "renameOutput": True, "outputKey": "lookup_cpf"},
+        {"conditions": cond("={{ $json.sgp_action }}", "definir_wifi"),
+         "renameOutput": True, "outputKey": "definir_wifi"},
+        {"conditions": cond("={{ $json.sgp_action }}", "abrir_chamado"),
+         "renameOutput": True, "outputKey": "abrir_chamado"},
+        {"conditions": cond("={{ $json.sgp_action }}", "segunda_via"),
+         "renameOutput": True, "outputKey": "segunda_via"},
+    ]}, "options": {"fallbackOutput": "extra", "renameFallbackOutput": "sem_chamada"}},
+     "id": "switch-action", "name": "Precisa chamar o SGP?",
+     "type": "n8n-nodes-base.switch", "typeVersion": 3.2, "position": [800, 0]},
+
+    # ---- Consulta de cliente (compartilhada pelos tres modulos) ----
+    {"parameters": {
+        "method": "POST", "url": "={{ $env.SGP_API_URL }}/api/ura/consultacliente/",
+        "sendBody": True, "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ app: $env.SGP_APP_NAME, token: $env.SGP_API_TOKEN, cpfcnpj: $json.sgp_payload.cpf }) }}",
+        "options": {"response": {"response": {"neverError": True}}, "timeout": 20000}},
+     "id": "http-lookup", "name": "SGP - Consultar Cliente",
+     "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2, "position": [1000, -320]},
+
+    code_node("code-proc-cpf", "Processar Consulta CPF", JS_PROC_CPF, [1200, -320]),
+
+    # Apos confirmar identidade, o modulo financeiro ainda precisa de uma
+    # chamada ao SGP - por isso este segundo switch.
+    {"parameters": {"rules": {"values": [
+        {"conditions": cond("={{ $json.sgp_action }}", "segunda_via"),
+         "renameOutput": True, "outputKey": "segunda_via"},
+    ]}, "options": {"fallbackOutput": "extra", "renameFallbackOutput": "responder"}},
+     "id": "switch-pos-id", "name": "Buscar faturas agora?",
+     "type": "n8n-nodes-base.switch", "typeVersion": 3.2, "position": [1400, -320]},
+
+    # ---- Modulo 1: Wi-Fi ----
+    {"parameters": {
+        "method": "POST", "url": "={{ $env.SGP_API_URL }}/api/ura/cpemanage/",
+        "sendBody": True, "contentType": "form-urlencoded",
+        "bodyParameters": {"parameters": SGP_AUTH + [
+            {"name": "contrato", "value": "={{ $json.sgp_payload.contrato }}"},
+            {"name": "novo_ssid", "value": "={{ $json.sgp_payload.ssid }}"},
+            {"name": "nova_senha", "value": "={{ $json.sgp_payload.senha }}"},
+            {"name": "novo_ssid_5g", "value": "={{ $json.sgp_payload.ssid }}"},
+            {"name": "nova_senha_5g", "value": "={{ $json.sgp_payload.senha }}"}]},
+        "options": {"response": {"response": {"neverError": True}}, "timeout": 30000}},
+     "id": "http-wifi", "name": "SGP - Definir Wifi",
+     "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2, "position": [1000, 0]},
+
+    code_node("code-proc-wifi", "Processar Definir Wifi", JS_PROC_WIFI, [1200, 0]),
+
+    # ---- Modulo 2: Financeiro (2a via) ----
+    # nao_gerar_os=1: sem isso o SGP abre uma ordem de servico a cada consulta,
+    # o que entupiria a fila de atendimento com pedidos automaticos de boleto.
+    {"parameters": {
+        "method": "POST", "url": "={{ $env.SGP_API_URL }}/api/ura/fatura2via/",
+        "sendBody": True, "contentType": "form-urlencoded",
+        "bodyParameters": {"parameters": SGP_AUTH + [
+            {"name": "contrato", "value": "={{ $json.sgp_payload.contrato }}"},
+            {"name": "nao_gerar_os", "value": "1"}]},
+        "options": {"response": {"response": {"neverError": True}}, "timeout": 25000}},
+     "id": "http-fatura", "name": "SGP - Segunda Via",
+     "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2, "position": [1600, -200]},
+
+    code_node("code-proc-fatura", "Processar Segunda Via", JS_PROC_FATURA, [1800, -200]),
+
+    # ---- Modulo 3: Suporte (abrir chamado) ----
+    {"parameters": {
+        "method": "POST", "url": "={{ $env.SGP_API_URL }}/api/ura/chamado/",
+        "sendBody": True, "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ token: $env.SGP_API_TOKEN, app: $env.SGP_APP_NAME, contrato: $json.sgp_payload.contrato, conteudo: $json.sgp_payload.conteudo, ocorrenciatipo: Number($env.SGP_OCORRENCIA_TIPO) }) }}",
+        "options": {"response": {"response": {"neverError": True}}, "timeout": 25000}},
+     "id": "http-chamado", "name": "SGP - Abrir Chamado",
+     "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2, "position": [1000, 220]},
+
+    code_node("code-proc-chamado", "Processar Chamado", JS_PROC_CHAMADO, [1200, 220]),
+
+    # ---- Persistencia e resposta ----
+    code_node("code-persist", "Preparar Persistencia", JS_PERSIST, [2050, 0]),
+
+    {"parameters": {"operation": "executeQuery",
+                    "query": ("INSERT INTO wa_sessions (phone, step, data, updated_at)\n"
+                              "VALUES ($1, $2, $3::jsonb, now())\n"
+                              "ON CONFLICT (phone) DO UPDATE\n"
+                              "  SET step = EXCLUDED.step, data = EXCLUDED.data, updated_at = now();"),
+                    "options": {"queryReplacement": "={{ [$json.phone, $json.step, $json.data] }}"}},
+     "id": "pg-upsert", "name": "Upsert Session", "type": "n8n-nodes-base.postgres",
+     "typeVersion": 2.4, "position": [2250, 0], "credentials": PG_CRED},
+
+    {"parameters": {
+        "conditions": {"options": {"caseSensitive": True, "leftValue": "", "typeValidation": "loose"},
+                       "conditions": [{"leftValue": "={{ $('Preparar Persistencia').first().json.audit }}",
+                                       "rightValue": "",
+                                       "operator": {"type": "string", "operation": "notEmpty",
+                                                    "singleValue": True}}],
+                       "combinator": "and"}, "options": {}},
+     "id": "if-audit", "name": "Tem auditoria?", "type": "n8n-nodes-base.if",
+     "typeVersion": 2.2, "position": [2450, 0]},
+
+    {"parameters": {"operation": "executeQuery",
+                    "query": ("INSERT INTO wa_wifi_change_log\n"
+                              "  (phone, cpf, contrato_id, ssid_novo, sucesso, resposta_sgp, tipo)\n"
+                              "SELECT a->>'phone', a->>'cpf', a->>'contrato', a->>'ssid_novo',\n"
+                              "       (a->>'sucesso')::boolean, a->'resposta_sgp',\n"
+                              "       COALESCE(a->>'tipo', 'wifi')\n"
+                              "FROM (SELECT $1::jsonb AS a) t;"),
+                    "options": {"queryReplacement": "={{ [$('Preparar Persistencia').first().json.audit] }}"}},
+     "id": "pg-audit", "name": "Gravar Auditoria", "type": "n8n-nodes-base.postgres",
+     "typeVersion": 2.4, "position": [2650, -120], "credentials": PG_CRED},
+
+    {"parameters": {
+        "method": "POST",
+        "url": "={{ $env.EVOLUTION_API_URL }}/message/sendText/{{ $env.EVOLUTION_INSTANCE }}",
+        "sendBody": True, "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ number: $('Preparar Persistencia').first().json.phone, text: $('Preparar Persistencia').first().json.reply_text }) }}",
+        "sendHeaders": True,
+        "headerParameters": {"parameters": [{"name": "apikey", "value": "={{ $env.EVOLUTION_API_KEY }}"}]},
+        "options": {"timeout": 20000}},
+     "id": "http-send", "name": "Evolution - Enviar Resposta",
+     "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2, "position": [2850, 0]},
 ]
 
+
+def to(name):
+    return [{"node": name, "type": "main", "index": 0}]
+
+
+PERSIST = "Preparar Persistencia"
 connections = {
-    "Webhook Evolution API": {"main": [[{"node": "Extract Inbound", "type": "main", "index": 0}]]},
-    "Extract Inbound": {"main": [[{"node": "Get Session", "type": "main", "index": 0}]]},
-    "Get Session": {"main": [[{"node": "Parse & Route", "type": "main", "index": 0}]]},
-    "Parse & Route": {"main": [[{"node": "Precisa chamar o SGP?", "type": "main", "index": 0}]]},
+    "Webhook Evolution API": {"main": [to("Extract Inbound")]},
+    "Extract Inbound": {"main": [to("Get Session")]},
+    "Get Session": {"main": [to("Parse & Route")]},
+    "Parse & Route": {"main": [to("Precisa chamar o SGP?")]},
     "Precisa chamar o SGP?": {"main": [
-        [{"node": "SGP - Consultar Cliente", "type": "main", "index": 0}],
-        [{"node": "SGP - Definir Wifi (CPE Manage)", "type": "main", "index": 0}],
-        [{"node": "Preparar Persistencia", "type": "main", "index": 0}],
+        to("SGP - Consultar Cliente"),   # lookup_cpf
+        to("SGP - Definir Wifi"),        # definir_wifi
+        to("SGP - Abrir Chamado"),       # abrir_chamado
+        to("SGP - Segunda Via"),         # segunda_via
+        to(PERSIST),                     # fallback: so responder
     ]},
-    "SGP - Consultar Cliente": {"main": [[{"node": "Processar Consulta CPF", "type": "main", "index": 0}]]},
-    "Processar Consulta CPF": {"main": [[{"node": "Preparar Persistencia", "type": "main", "index": 0}]]},
-    "SGP - Definir Wifi (CPE Manage)": {"main": [[{"node": "Processar Definir Wifi", "type": "main", "index": 0}]]},
-    "Processar Definir Wifi": {"main": [[{"node": "Preparar Persistencia", "type": "main", "index": 0}]]},
-    "Preparar Persistencia": {"main": [[{"node": "Upsert Session", "type": "main", "index": 0}]]},
-    "Upsert Session": {"main": [[{"node": "Tem auditoria?", "type": "main", "index": 0}]]},
-    "Tem auditoria?": {"main": [
-        [{"node": "Gravar Auditoria", "type": "main", "index": 0}],
-        [{"node": "Evolution - Enviar Resposta", "type": "main", "index": 0}],
+    "SGP - Consultar Cliente": {"main": [to("Processar Consulta CPF")]},
+    "Processar Consulta CPF": {"main": [to("Buscar faturas agora?")]},
+    "Buscar faturas agora?": {"main": [
+        to("SGP - Segunda Via"),         # identidade ok + intent financeiro
+        to(PERSIST),                     # fallback: so responder
     ]},
-    "Gravar Auditoria": {"main": [[{"node": "Evolution - Enviar Resposta", "type": "main", "index": 0}]]},
+    "SGP - Segunda Via": {"main": [to("Processar Segunda Via")]},
+    "Processar Segunda Via": {"main": [to(PERSIST)]},
+    "SGP - Definir Wifi": {"main": [to("Processar Definir Wifi")]},
+    "Processar Definir Wifi": {"main": [to(PERSIST)]},
+    "SGP - Abrir Chamado": {"main": [to("Processar Chamado")]},
+    "Processar Chamado": {"main": [to(PERSIST)]},
+    PERSIST: {"main": [to("Upsert Session")]},
+    "Upsert Session": {"main": [to("Tem auditoria?")]},
+    "Tem auditoria?": {"main": [to("Gravar Auditoria"), to("Evolution - Enviar Resposta")]},
+    "Gravar Auditoria": {"main": [to("Evolution - Enviar Resposta")]},
 }
 
-wf = {
-    "name": "WhatsApp Autoatendimento Wi-Fi (Evolution API + SGP)",
-    "nodes": nodes,
-    "connections": connections,
-    "active": False,
-    "settings": {"executionOrder": "v1"},
-    "pinData": {},
-}
+wf = {"name": "WhatsApp Autoatendimento ISP (Evolution API + SGP)",
+      "nodes": nodes, "connections": connections, "active": False,
+      "settings": {"executionOrder": "v1"}, "pinData": {}}
 
 out = "n8n/workflow-wifi-selfservice.json"
 with open(out, "w", encoding="utf-8") as f:
