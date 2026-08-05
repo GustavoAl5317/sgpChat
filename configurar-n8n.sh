@@ -26,6 +26,7 @@ WF_SRC="n8n/workflow-wifi-selfservice.json"
 [[ -f "$WF_SRC" ]] || die "$WF_SRC nao encontrado."
 
 CRED_ID="botsgpPostgres"
+WF_UUID="botsgpSelfService"
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 
 # ---- credencial do Postgres --------------------------------------------
@@ -51,9 +52,9 @@ PY
 
 # ---- workflow, ja apontando para a credencial --------------------------
 log "Preparando o workflow..."
-python3 - "$WF_SRC" "$TMP/wf.json" "$CRED_ID" <<'PY'
+python3 - "$WF_SRC" "$TMP/wf.json" "$CRED_ID" "$WF_UUID" <<'PY'
 import json, sys
-src, dst, cred = sys.argv[1], sys.argv[2], sys.argv[3]
+src, dst, cred, wid = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 wf = json.load(open(src, encoding="utf-8"))
 n = 0
 for node in wf["nodes"]:
@@ -61,6 +62,12 @@ for node in wf["nodes"]:
     if c:
         c["id"] = cred          # troca o placeholder REPLACE_ME
         n += 1
+# O CLI do n8n nao gera id sozinho: sem isso a insercao viola o NOT NULL da
+# coluna. Id fixo tambem torna a reexecucao do script idempotente (atualiza
+# o mesmo workflow em vez de criar copias).
+wf["id"] = wid
+wf.setdefault("versionId", wid)
+wf["active"] = False
 json.dump(wf, open(dst, "w", encoding="utf-8"), ensure_ascii=False)
 print("    nodes de Postgres apontados para a credencial:", n)
 PY
@@ -80,12 +87,7 @@ docker compose exec -T -u node n8n n8n import:workflow --input=/tmp/wf.json \
 docker compose exec -T n8n rm -f /tmp/cred.json /tmp/wf.json 2>/dev/null || true
 
 # ---- ativar ------------------------------------------------------------
-WF_NAME=$(python3 -c "import json;print(json.load(open('$WF_SRC',encoding='utf-8'))['name'])")
-WF_ID=$(docker compose exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc \
-  "SELECT id FROM workflow_entity WHERE name = \$\$${WF_NAME}\$\$ ORDER BY \"updatedAt\" DESC LIMIT 1;" \
-  2>/dev/null | tr -d '[:space:]')
-
-[[ -n "$WF_ID" ]] || die "nao encontrei o workflow no banco apos importar"
+WF_ID="$WF_UUID"
 log "Workflow id: $WF_ID"
 
 log "Ativando..."
