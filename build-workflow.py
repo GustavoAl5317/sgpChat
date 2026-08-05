@@ -36,7 +36,7 @@ JS_PARSE_ROUTE = r"""
 const inbound = $('Extract Inbound').first().json;
 const rows = $input.all();
 const sessionRow = rows.length ? rows[0].json : null;
-const step = sessionRow ? sessionRow.step : 'menu';
+const step = (sessionRow && sessionRow.step) || 'menu';
 const session = sessionRow && sessionRow.data
   ? (typeof sessionRow.data === 'string' ? JSON.parse(sessionRow.data) : sessionRow.data)
   : {};
@@ -734,6 +734,10 @@ nodes = [
                     "query": "SELECT step, data FROM wa_sessions WHERE phone = $1",
                     "options": {"queryReplacement": "={{ [$json.phone] }}"}},
      "id": "pg-get", "name": "Get Session", "type": "n8n-nodes-base.postgres",
+     # Cliente novo nao tem linha em wa_sessions. Sem isto o SELECT devolve
+     # zero itens, o n8n encerra o ramo e o fluxo morre em silencio - com
+     # status "success", sem erro nenhum.
+     "alwaysOutputData": True,
      "typeVersion": 2.4, "position": [400, 0], "credentials": PG_CRED},
 
     code_node("code-route", "Parse & Route", JS_PARSE_ROUTE, [600, 0]),
@@ -878,6 +882,9 @@ nodes = [
                               "  SET step = EXCLUDED.step, data = EXCLUDED.data, updated_at = now();"),
                     "options": {"queryReplacement": "={{ [$json.phone, $json.step, $json.data] }}"}},
      "id": "pg-upsert", "name": "Upsert Session", "type": "n8n-nodes-base.postgres",
+     # O envio da resposta vem depois deste node: se o INSERT nao devolver
+     # linha, o cliente nunca recebe a mensagem.
+     "alwaysOutputData": True,
      "typeVersion": 2.4, "position": [2250, 0], "credentials": PG_CRED},
 
     {"parameters": {
