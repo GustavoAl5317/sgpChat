@@ -54,10 +54,16 @@ sec "5. Para onde a Evolution manda os eventos"
 WH=$(CURL -s -m 15 -H "apikey: ${EVOLUTION_API_KEY}" \
      "http://botsgp-evolution:8080/webhook/find/${EVOLUTION_INSTANCE}")
 echo "          ${WH:0:300}"
+GLOBAL=$(docker inspect botsgp-evolution --format '{{range .Config.Env}}{{println .}}{{end}}' \
+         | grep '^WEBHOOK_GLOBAL_URL=' | cut -d= -f2- || true)
 if echo "$WH" | grep -q 'evolution-inbound'; then
-  ok "aponta para o webhook do n8n"
+  ok "webhook por instancia aponta para o n8n"
+elif echo "$GLOBAL" | grep -q 'evolution-inbound'; then
+  # "null" aqui so significa que nao ha config por instancia; o webhook
+  # global do compose cobre todas as instancias e e o que esta em uso.
+  ok "sem webhook por instancia, mas o global aponta certo: $GLOBAL"
 else
-  bad "a instancia NAO tem webhook apontando para o n8n"
+  bad "a Evolution nao tem webhook apontando para o n8n"
   echo "          -> corrija com: bash apontar-webhook.sh"
 fi
 
