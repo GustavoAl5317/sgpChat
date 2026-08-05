@@ -76,17 +76,11 @@ services:
       EVOLUTION_API_KEY: ${EVOLUTION_API_KEY}
     volumes:
       - n8n_data:/home/node/.n8n
-    # Fica em duas redes: a interna (fala com Postgres/Evolution) e a do
-    # Traefik do EasyPanel, que termina o TLS e publica na internet.
+    # Duas redes: a interna (fala com Postgres/Evolution) e a do Traefik,
+    # que termina o TLS e publica na internet. As rotas do Traefik sao
+    # escritas por publicar-no-traefik.sh, nao por labels: o Traefik do
+    # EasyPanel roda em Swarm e ignora labels de containers de compose.
     networks: [botsgp, proxy]
-    labels:
-      traefik.enable: "true"
-      traefik.docker.network: ${TRAEFIK_NETWORK}
-      traefik.http.routers.botsgp-n8n.rule: Host(`${DOMAIN}`)
-      traefik.http.routers.botsgp-n8n.entrypoints: ${TRAEFIK_ENTRYPOINT}
-      traefik.http.routers.botsgp-n8n.tls: "true"
-      traefik.http.routers.botsgp-n8n.tls.certresolver: ${TRAEFIK_CERTRESOLVER}
-      traefik.http.services.botsgp-n8n.loadbalancer.server.port: "5678"
 
   evolution:
     # O projeto migrou de atendai/ para evoapicloud/ (atendai parou no v2.2.3).
@@ -98,7 +92,8 @@ services:
     depends_on:
       postgres: { condition: service_healthy }
     environment:
-      SERVER_URL: http://evolution:8080
+      # URL publica: o Manager usa isso para montar os links dele.
+      SERVER_URL: https://${EVOLUTION_DOMAIN}
       AUTHENTICATION_API_KEY: ${EVOLUTION_API_KEY}
 
       DATABASE_ENABLED: "true"
@@ -128,7 +123,9 @@ services:
       DEL_INSTANCE: "false"
     volumes:
       - evolution_instances:/evolution/instances
-    networks: [botsgp]
+    # Tambem na rede do Traefik: a empresa acessa o Manager pelo navegador
+    # para parear o WhatsApp, sem precisar de acesso ao servidor.
+    networks: [botsgp, proxy]
 
 volumes:
   postgres_data:

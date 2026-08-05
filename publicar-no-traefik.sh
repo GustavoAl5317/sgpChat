@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Publica o n8n no Traefik do EasyPanel via file provider.
+# Publica o n8n e o Manager da Evolution no Traefik do EasyPanel.
 #
-# Por que assim e nao por labels do Docker: o Traefik do EasyPanel roda em
-# Swarm e le a configuracao dinamica de /etc/easypanel/traefik/config/*.yaml.
+# Por que via arquivo e nao por labels do Docker: o Traefik do EasyPanel roda
+# em Swarm e le a configuracao dinamica de /etc/easypanel/traefik/config/*.yaml.
 # Um arquivo de rota ali funciona sempre; labels em container de compose so
-# funcionam se o provider Docker estiver ligado - e nao esta.
+# funcionariam com o provider Docker ligado - e nao esta.
 #
 # Uso:  bash publicar-no-traefik.sh
 set -euo pipefail
@@ -20,10 +20,12 @@ source .env
 
 : "${DOMAIN:?defina DOMAIN no .env}"
 CERTRESOLVER=${TRAEFIK_CERTRESOLVER:-letsencrypt}
+# Dominio do Manager da Evolution: onde a EMPRESA acessa para parear o WhatsApp
+# pelo navegador, sem precisar de acesso ao servidor.
+EVOLUTION_DOMAIN=${EVOLUTION_DOMAIN:-evolution.${DOMAIN}}
 
 cat > "$DEST" <<EOF
 # Gerado por publicar-no-traefik.sh - nao editar a mao.
-# Publica o container botsgp-n8n em https://${DOMAIN}
 http:
   routers:
     botsgp-n8n-http:
@@ -37,33 +39,70 @@ http:
       service: botsgp-n8n
       tls:
         certResolver: ${CERTRESOLVER}
+
+    botsgp-evolution-http:
+      rule: "Host(\`${EVOLUTION_DOMAIN}\`)"
+      entryPoints: [http]
+      middlewares: [redirect-to-https]
+      service: botsgp-evolution
+    botsgp-evolution:
+      rule: "Host(\`${EVOLUTION_DOMAIN}\`)"
+      entryPoints: [https]
+      service: botsgp-evolution
+      tls:
+        certResolver: ${CERTRESOLVER}
+
   services:
     botsgp-n8n:
       loadBalancer:
         passHostHeader: true
         servers:
           - url: "http://botsgp-n8n:5678"
+    botsgp-evolution:
+      loadBalancer:
+        passHostHeader: true
+        servers:
+          - url: "http://botsgp-evolution:8080"
 EOF
 
-echo "==> Rota escrita em $DEST"
+echo "==> Rotas escritas em $DEST"
 
-# O Traefik precisa alcancar o container: os dois tem que estar na mesma rede.
+# O Traefik so alcanca os containers se estiverem na mesma rede que ele.
 NET=${TRAEFIK_NETWORK:-easypanel}
-if ! docker inspect botsgp-n8n --format '{{json .NetworkSettings.Networks}}' 2>/dev/null | grep -q "\"$NET\""; then
-  echo "[!] botsgp-n8n nao esta na rede '$NET'. Conectando..."
-  docker network connect "$NET" botsgp-n8n || true
-fi
-
-echo "==> O Traefik recarrega sozinho (file provider com watch). Testando..."
-sleep 5
-for i in $(seq 1 12); do
-  CODE=$(curl -s -o /dev/null -w '%{http_code}' -m 10 "https://${DOMAIN}/" || echo 000)
-  case "$CODE" in
-    200|401|302) echo "==> OK! n8n respondendo em https://${DOMAIN} (HTTP $CODE)"; exit 0 ;;
-  esac
-  echo "    tentativa $i: HTTP $CODE (certificado pode estar sendo emitido)"
-  sleep 10
+for C in botsgp-n8n botsgp-evolution; do
+  if ! docker inspect "$C" --format '{{json .NetworkSettings.Networks}}' 2>/dev/null | grep -q "\"$NET\""; then
+    echo "[!] $C fora da rede '$NET'. Conectando..."
+    docker network connect "$NET" "$C" || true
+  fi
 done
 
-echo "[!] Ainda nao respondeu. Verifique:"
-echo "    docker logs \$(docker ps -qf name=easypanel-traefik) --tail 40"
+echo "==> Aguardando o Traefik recarregar e emitir certificados..."
+sleep 5
+check() {
+  for i in $(seq 1 12); do
+    CODE=$(curl -s -o /dev/null -w '%{http_code}' -m 10 "https://$1/" || echo 000)
+    case "$CODE" in
+      200|401|302|404) echo "    OK  https://$1  (HTTP $CODE)"; return 0 ;;
+    esac
+    sleep 10
+  done
+  echo "    [!] https://$1 nao respondeu (ultimo HTTP $CODE)"
+  return 1
+}
+check "$DOMAIN"           || true
+check "$EVOLUTION_DOMAIN" || true
+
+cat <<EOF
+
+================================================================
+ Para VOCE (dev):
+   n8n .................. https://${DOMAIN}
+
+ Para a EMPRESA parear o WhatsApp (nao precisa de acesso ao servidor):
+   Evolution Manager .... https://${EVOLUTION_DOMAIN}/manager
+   API Key .............. ${EVOLUTION_API_KEY}
+
+   A pessoa abre o link, cola a API Key, clica na instancia
+   "${EVOLUTION_INSTANCE}" e escaneia o QR Code pelo celular da empresa.
+================================================================
+EOF
