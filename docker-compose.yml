@@ -79,7 +79,10 @@ services:
     networks: [botsgp]
 
   evolution:
-    image: atendai/evolution-api:v2.1.1
+    # O projeto migrou de atendai/ para evoapicloud/ (atendai parou no v2.2.3).
+    # Versao fixada de proposito: "latest" ja quebrou compatibilidade de env vars
+    # entre releases da Evolution.
+    image: evoapicloud/evolution-api:v2.3.7
     container_name: botsgp-evolution
     restart: unless-stopped
     depends_on:
