@@ -36,7 +36,7 @@ function inbound(text, phone) {
 // Um turno completo: mensagem do cliente -> resposta do bot + nova sessao.
 // `sgpResponse` e a resposta da chamada que o turno dispara; `faturas` so e
 // usada quando o turno encadeia consulta de cliente + busca de faturas.
-function turn(sessionRow, text, phone, sgpResponse, faturas) {
+function turn(sessionRow, text, phone, sgpResponse, faturas, diag) {
   const inb = inbound(text, phone);
   if (!inb) return { skipped: true, sessionRow };
   let r = run('Parse & Route', sessionRow ? [sessionRow] : [], { 'Extract Inbound': inb });
@@ -54,6 +54,17 @@ function turn(sessionRow, text, phone, sgpResponse, faturas) {
     r = run('Processar Segunda Via', [faturas || sgpResponse], { 'Parse & Route': r });
   } else if (r.sgp_action === 'abrir_chamado') {
     r = run('Processar Chamado', [sgpResponse], { 'Parse & Route': r });
+  }
+
+  // Diagnostico encadeia: buscar ONU -> detalhe -> info
+  if (r.sgp_action === 'diagnostico' && diag) {
+    const busca = run('Processar Busca ONU', [diag.lista], { 'Parse & Route': r });
+    if (busca.onu_id == null) {
+      r = run('ONU Nao Encontrada', [busca], {});
+    } else {
+      r = run('Processar Diagnostico', [diag.info],
+              { 'Processar Busca ONU': busca, 'SGP - ONU Detalhe': diag.detalhe });
+    }
   }
 
   const p = run('Preparar Persistencia', [r], {});
@@ -79,11 +90,13 @@ const FATURAS = { status: 1, razaoSocial: 'ZE DO ALHO', links: [
 ]};
 const SEM_FATURA = { status: 0, razaoSocial: 'PEDRO', links: [] };
 
-function ateIdentidade(opcaoMenu, phone) {
+function ateIdentidade(opcaoMenu, phone, diag) {
   let s = null;
   let t = turn(s, opcaoMenu, phone); s = t.sessionRow;
-  t = turn(s, CPF, phone, RESP, FATURAS); s = t.sessionRow;
-  if (t.step === 'awaiting_contract_choice') { t = turn(s, '1', phone, RESP, FATURAS); s = t.sessionRow; }
+  t = turn(s, CPF, phone, RESP, FATURAS, diag); s = t.sessionRow;
+  if (t.step === 'awaiting_contract_choice') {
+    t = turn(s, '1', phone, RESP, FATURAS, diag); s = t.sessionRow;
+  }
   return { t, s };
 }
 
@@ -188,6 +201,69 @@ check(grupo === null, 'mensagem de grupo e ignorada');
 const propria = run('Extract Inbound', [{ event: 'messages.upsert',
   data: { key: { remoteJid: '5511999999999@s.whatsapp.net', fromMe: true }, message: { conversation: 'oi' } } }], {});
 check(propria === null, 'mensagem enviada pelo proprio bot e ignorada');
+
+// ======================== MODULO 4: Diagnostico ========================
+console.log('\n=== Modulo 4: Diagnostico da conexao ===');
+
+// Estruturas reais capturadas da API demo
+const ONU_LISTA = [{ id: 6485, olt_name: 'ONE', slot: 0, pon: 1, onuid: 4,
+  type: '5506-04-f1', mode: 'PPPoE', phy_addr: 'TSMX-029ba901' }];
+const ONU_DETALHE = { onu: { vlan: 1000, pon: 1, olt: 'ONE', onu: 4, slot: 0,
+  addr: 'TSMX-029ba901', tipo: '5506-04-f1', modelo: 'huawei',
+  porta_cto: 3, cto: 'CTO-CENTRO-07', descricao: '', modo: 'PPPoE' } };
+
+// Formatos de saida das OLTs mais comuns no Brasil
+const OLTS = {
+  huawei:    { result: 'ONT  Rx power(dBm)  Tx power(dBm)\n  0/1/1  -19.45  2.31' },
+  zte:       { result: 'Rx Power: -22.07 dbm   Tx Power: 2.15 dbm' },
+  fiberhome: { result: 'optical power: rx -26.80dBm tx 1.90dBm' },
+  ruim:      { result: 'ONT Rx power(dBm): -29.55' },
+  // Falha real capturada da demo (OLT inexistente)
+  falha:     { result: 'End Of File (EOF). Exception style platform.\ncommand: /usr/bin/ssh\nssh: Could not resolve hostname one' },
+};
+
+for (const vendor of Object.keys(OLTS)) {
+  const d = { lista: ONU_LISTA, detalhe: ONU_DETALHE, info: OLTS[vendor] };
+  const td = ateIdentidade('4', PHONE_OK, d).t;
+  const temSinal = /Sinal optico/.test(td.reply || '');
+  if (vendor === 'falha') {
+    check(!temSinal && /Nao consegui medir o sinal/.test(td.reply),
+          'OLT fora do ar -> nao inventa sinal, avisa que nao mediu');
+    check(/CTO-CENTRO-07/.test(td.reply), '  ...mas ainda entrega CTO e equipamento');
+  } else if (vendor === 'ruim') {
+    check(/Ruim/.test(td.reply) && /visita tecnica/.test(td.reply),
+          'sinal -29.55 dBm -> Ruim + sugere chamado');
+  } else {
+    check(temSinal, 'OLT ' + vendor + ': sinal extraido');
+  }
+}
+
+const tdiag = ateIdentidade('4', PHONE_OK,
+  { lista: ONU_LISTA, detalhe: ONU_DETALHE, info: OLTS.huawei }).t;
+console.log('  bot:', JSON.stringify(tdiag.reply).slice(0, 190));
+check(/-19\.45 dBm/.test(tdiag.reply), 'valor do sinal correto na resposta');
+check(/Bom/.test(tdiag.reply), '-19.45 dBm classificado como Bom');
+check(/CTO-CENTRO-07/.test(tdiag.reply) && /porta 3/.test(tdiag.reply), 'mostra CTO e porta');
+check(tdiag.audit && tdiag.audit.tipo === 'diagnostico', 'auditoria tipo=diagnostico');
+check(tdiag.step === 'menu' && Object.keys(tdiag.data).length === 0, 'sessao limpa apos diagnostico');
+
+// Sem ONU vinculada (exatamente o caso da base demo)
+const tsem = ateIdentidade('4', PHONE_OK,
+  { lista: [], detalhe: ONU_DETALHE, info: OLTS.huawei }).t;
+check(/Nao localizei o equipamento/.test(tsem.reply || ''), 'sem ONU vinculada -> mensagem clara');
+
+// Numeros soltos no texto da OLT nao podem virar leitura de sinal
+const tabs = ateIdentidade('4', PHONE_OK, { lista: ONU_LISTA, detalhe: ONU_DETALHE,
+  info: { result: 'uptime 12345 dias  temperatura 47 C  serial 9988' } }).t;
+check(!/Sinal optico/.test(tabs.reply), 'numeros sem dBm nao viram leitura de sinal');
+
+// Diagnostico passa pela mesma validacao dos outros modulos
+const diagOk = { lista: ONU_LISTA, detalhe: ONU_DETALHE, info: OLTS.huawei };
+let sd = null;
+let tq = turn(sd, '4', PHONE_OUTRO); sd = tq.sessionRow;
+tq = turn(sd, CPF, PHONE_OUTRO, RESP, FATURAS, diagOk); sd = tq.sessionRow;
+if (tq.step === 'awaiting_contract_choice') tq = turn(sd, '1', PHONE_OUTRO, RESP, FATURAS, diagOk);
+check(tq.step === 'awaiting_second_factor', 'diagnostico exige 2FA como os demais');
 
 console.log('\n----------------------------------------');
 console.log(ok + ' passaram, ' + fail + ' falharam');

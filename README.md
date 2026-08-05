@@ -6,6 +6,7 @@ sozinho pelo WhatsApp, com validação de identidade em dois fatores:
 - **Trocar nome e senha do Wi-Fi** — aplicado no roteador via TR-069/ACS
 - **2ª via de boleto** — faturas em aberto com linha digitável e link
 - **Abrir chamado de suporte** — devolve o número do protocolo
+- **Diagnóstico da conexão** — CTO/porta, equipamento e sinal óptico
 - **Falar com atendente** — encaminha para humano
 
 Feito para rodar hoje na Evolution API e migrar depois para a API oficial
@@ -15,7 +16,7 @@ da Meta trocando só dois nodes.
 
 A integração com o SGP foi **verificada contra a API real** (base
 `demo.sgp.net.br`): endpoints, autenticação, nomes de campo e formato das
-respostas estão confirmados, não são suposições. 34 testes automatizados
+respostas estão confirmados, não são suposições. 48 testes automatizados
 rodam a máquina de estados contra respostas reais da API.
 
 O que **não** foi validado contra hardware: a aplicação efetiva do Wi-Fi
@@ -63,6 +64,21 @@ Retorna `{status, razaoSocial, protocolo, contratoId, msg}`. O
 `ocorrenciatipo` é um código **específico do SGP de cada provedor** —
 liste os seus em `GET /api/os/ocorrencia/tipo/list/` e configure em
 `SGP_OCORRENCIA_TIPO`.
+
+**Diagnóstico FTTH** — três chamadas encadeadas:
+
+| Endpoint | Traz |
+|---|---|
+| `GET /api/fttx/onu/list/?contrato=` | localiza a ONU do contrato |
+| `GET /api/fttx/onu/{id}/` | `cto`, `porta_cto`, `olt`, `modelo` (JSON) |
+| `GET /api/fttx/onu/{id}/info/` | status ao vivo — **texto cru do CLI da OLT** |
+
+Verificado que `?phy_addr=` filtra corretamente (devolve 1 de 7.071), o que
+dá um plano B: quando o filtro por contrato vem vazio, o fluxo procura pelo
+`servico_mac` do contrato, que casa com o `phy_addr` da ONU.
+
+A documentação diz que esses endpoints usam Basic Auth, mas **testei e eles
+aceitam `token`+`app` também** — por isso o bot usa uma credencial só.
 
 **Alterar Wi-Fi** — `POST /api/ura/cpemanage/` (aceita JSON ou form-urlencoded)
 ```
@@ -112,7 +128,7 @@ já de posse do contrato, buscar as faturas — sem obrigar o cliente a
 mandar outra mensagem no meio.
 
 Menu: **1** Wi-Fi · **2** 2ª via de boleto · **3** abrir chamado ·
-**4** atendente humano.
+**4** diagnóstico da conexão · **5** atendente humano.
 
 Estados: `menu` → `awaiting_cpf` → (`awaiting_contract_choice`) →
 (`awaiting_second_factor`) → e daí depende do que o cliente pediu:
@@ -122,6 +138,7 @@ Estados: `menu` → `awaiting_cpf` → (`awaiting_contract_choice`) →
 | 1 Wi-Fi | `awaiting_ssid` → `awaiting_password` → aplica no roteador |
 | 2 Boleto | busca as faturas e responde na hora |
 | 3 Suporte | `awaiting_support_desc` → abre chamado e devolve o protocolo |
+| 4 Diagnóstico | busca a ONU, lê CTO/porta e sinal óptico, responde na hora |
 
 Digitar `menu`, `0`, `voltar`, `início` ou `sair` reinicia a qualquer momento.
 
@@ -239,6 +256,22 @@ curl -s -X POST "$SGP_API_URL/api/ura/consultacliente/" -H "Content-Type: applic
   Deliberadamente **não** expus os endpoints de liquidar, cancelar,
   estornar ou pagar com cartão — são operações financeiras que um
   autoatendimento não deve executar sozinho.
+- **O sinal óptico depende do fabricante da OLT.** O `ONU Info` abre um SSH
+  ao vivo na OLT e devolve o texto cru do terminal — cada fabricante formata
+  diferente. O parser aceita o valor em dois casos: quando o número está
+  colado no `dBm`, ou quando existe **exatamente um** valor negativo na faixa
+  plausível (potência recebida é negativa e a transmitida é positiva, então
+  um único negativo só pode ser o Rx). Em qualquer outro caso ele responde
+  "não consegui medir" em vez de arriscar mostrar Tx como se fosse Rx.
+  Testado contra amostras de Huawei (tabular), ZTE e Fiberhome — mas com
+  amostras que eu construí, **não com saída real da OLT do provedor**.
+  Quando tiverem acesso à base real, mande a saída do `ONU Info` que eu
+  confirmo ou ajusto.
+- **O vínculo contrato → ONU não pôde ser verificado.** A base demo tem
+  7.071 ONUs e nenhuma ligada a contrato. O filtro `?contrato=` é
+  reconhecido pela API (id inexistente devolve 0, igual aos válidos), mas
+  sem um caso positivo não dá para confirmar. Por isso existe o plano B via
+  `servico_mac`.
 - **PIX não implementado.** Existe `POST /api/ura/pagamento/pix/{fatura}`,
   mas a base demo não tem PIX configurado, então não consegui verificar o
   formato da resposta. Fácil de plugar depois.

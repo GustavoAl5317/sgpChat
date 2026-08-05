@@ -93,7 +93,8 @@ const MENU = 'Ola! Sou o atendimento automatico.\n\n' +
   '*1* - Alterar nome/senha do Wi-Fi\n' +
   '*2* - 2a via de boleto\n' +
   '*3* - Abrir chamado de suporte\n' +
-  '*4* - Falar com atendente\n\n' +
+  '*4* - Diagnostico da minha conexao\n' +
+  '*5* - Falar com atendente\n\n' +
   'Digite o numero da opcao desejada.';
 
 // Depois que a identidade e confirmada, para onde vai depende do que o
@@ -106,6 +107,9 @@ function aposIdentidade(intent) {
   if (intent === 'suporte') {
     return { sgp_action: 'none', next_step: 'awaiting_support_desc',
              reply_text: 'Descreva o problema que voce esta enfrentando (em uma mensagem):' };
+  }
+  if (intent === 'diagnostico') {
+    return { sgp_action: 'diagnostico', next_step: 'menu', reply_text: null };
   }
   return { sgp_action: 'none', next_step: 'awaiting_ssid',
            reply_text: 'Qual sera o novo nome (SSID) da sua rede Wi-Fi?' };
@@ -126,12 +130,12 @@ if (/^(menu|sair|voltar|inicio|0)$/i.test(text) && step !== 'menu') {
 
 switch (step) {
   case 'menu': {
-    if (['1', '2', '3'].includes(text)) {
-      const intent = text === '1' ? 'wifi' : (text === '2' ? 'financeiro' : 'suporte');
+    if (['1', '2', '3', '4'].includes(text)) {
+      const intents = { '1': 'wifi', '2': 'financeiro', '3': 'suporte', '4': 'diagnostico' };
       reply_text = 'Para sua seguranca, informe o CPF/CNPJ do titular da conta (somente numeros):';
       next_step = 'awaiting_cpf';
-      session_patch = { attempts: 0, intent: intent };
-    } else if (text === '4') {
+      session_patch = { attempts: 0, intent: intents[text] };
+    } else if (text === '5') {
       reply_text = 'Certo! Vou te transferir para um atendente humano. Aguarde um momento.';
       next_step = 'human_handoff';
     } else {
@@ -180,6 +184,7 @@ switch (step) {
         next_step = d.next_step;
         sgp_action = d.sgp_action;
         if (d.sgp_action === 'segunda_via') sgp_payload = { contrato: esc.contrato };
+        if (d.sgp_action === 'diagnostico') sgp_payload = { contrato: esc.contrato, mac: session.mac || '' };
       }
     }
     break;
@@ -194,6 +199,7 @@ switch (step) {
       next_step = d.next_step;
       sgp_action = d.sgp_action;
       if (d.sgp_action === 'segunda_via') sgp_payload = { contrato: session.contrato };
+      if (d.sgp_action === 'diagnostico') sgp_payload = { contrato: session.contrato, mac: session.mac || '' };
       session_patch = { attempts: 0, second_factor_target: undefined, second_factor_pending: undefined };
     } else {
       const n = attempts + 1;
@@ -286,10 +292,14 @@ const intent = (prev.session_patch && prev.session_patch.intent) || prev.session
 function last8(v) { return String(v || '').replace(/\D/g, '').slice(-8); }
 
 // Mesma decisao usada no Parse & Route: identidade confirmada -> para onde vai.
-function aposIdentidade(it, contrato) {
+function aposIdentidade(it, contrato, mac) {
   if (it === 'financeiro') {
     return { sgp_action: 'segunda_via', next_step: 'menu', reply_text: null,
              sgp_payload: { contrato: contrato } };
+  }
+  if (it === 'diagnostico') {
+    return { sgp_action: 'diagnostico', next_step: 'menu', reply_text: null,
+             sgp_payload: { contrato: contrato, mac: mac || '' } };
   }
   if (it === 'suporte') {
     return { sgp_action: 'none', next_step: 'awaiting_support_desc', sgp_payload: {},
@@ -321,6 +331,9 @@ if (contratos.length === 0) {
   const telefoneBate = telefones.some(function (t) { return last8(t) && last8(t) === last8(prev.phone); });
 
   session_patch.nome = ref.razaoSocial || '';
+  // servico_mac casa com o phy_addr da ONU - e o plano B para achar o
+  // equipamento quando o filtro por contrato nao retorna nada.
+  session_patch.mac = ref.servico_mac || ref.servico_mac2 || '';
 
   if (ativos.length === 1) {
     session_patch.contrato = ref.contratoId;
@@ -340,7 +353,7 @@ if (contratos.length === 0) {
 
   if (telefoneBate) {
     if (ativos.length === 1) {
-      const d = aposIdentidade(intent, ref.contratoId);
+      const d = aposIdentidade(intent, ref.contratoId, session_patch.mac);
       reply_text = d.reply_text;
       next_step = d.next_step;
       sgp_action = d.sgp_action;
@@ -532,6 +545,139 @@ return [{ json: Object.assign({}, prev, {
 }) }];
 """
 
+# ---------------------------------------------------------------- Diagnostico
+JS_PROC_BUSCA_ONU = r"""
+const prev = $('Parse & Route').first().json;
+const lista = $input.first().json;
+
+// /api/fttx/onu/list/ devolve um array. Filtrar por ?contrato= e o caminho
+// natural, mas nem toda base tem esse vinculo preenchido - por isso o node
+// seguinte tenta de novo por phy_addr (que casa com servico_mac do contrato).
+const onus = Array.isArray(lista) ? lista : [];
+const mac = String((prev.sgp_payload && prev.sgp_payload.mac) || '').replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+
+let escolhida = null;
+if (onus.length === 1) {
+  escolhida = onus[0];
+} else if (onus.length > 1 && mac) {
+  escolhida = onus.find(function (o) {
+    return String(o.phy_addr || '').replace(/[^a-zA-Z0-9]/g, '').toLowerCase() === mac;
+  }) || onus[0];
+} else if (onus.length > 1) {
+  escolhida = onus[0];
+}
+
+return [{ json: Object.assign({}, prev, {
+  onu_id: escolhida ? escolhida.id : null,
+  onu_basica: escolhida || null,
+}) }];
+"""
+
+JS_PROC_DIAGNOSTICO = r"""
+const prev = $('Processar Busca ONU').first().json;
+const detalhe = $('SGP - ONU Detalhe').first().json;
+const info = $input.first().json;
+
+const onu = (detalhe && detalhe.onu) || {};
+const base = prev.onu_basica || {};
+
+// O ONU Info abre um SSH na OLT e devolve o texto cru do terminal - o formato
+// muda conforme o fabricante (Huawei, ZTE, Fiberhome, Datacom). Em vez de
+// confiar num parser especifico, procuramos um valor em dBm e so aceitamos se
+// cair na faixa fisicamente plausivel. Melhor dizer "indisponivel" do que
+// mostrar um numero errado de sinal para o cliente.
+function extrairSinal(txt) {
+  const s = String(txt == null ? '' : txt);
+  if (!s || /Exception|Traceback|Could not resolve|timeout/i.test(s)) return null;
+  // Se nem fala de potencia, nao ha o que extrair
+  if (!/dbm|power|potencia/i.test(s)) return null;
+
+  const naFaixa = function (v) { return v < 0 && v >= -40; };
+
+  // 1) Valor colado na unidade ("-22.07 dbm"): sem ambiguidade.
+  const colados = [];
+  const re = /(-?\d{1,2}(?:[.,]\d{1,2})?)\s*dbm/gi;
+  let m;
+  while ((m = re.exec(s)) !== null) colados.push(parseFloat(m[1].replace(',', '.')));
+  const colNeg = colados.filter(naFaixa);
+  if (colNeg.length) return colNeg[0];
+
+  // 2) Formato tabular (Huawei e afins): a unidade fica no cabecalho e os
+  //    valores vem embaixo. Aqui vale a fisica do GPON: a potencia RECEBIDA
+  //    e negativa e a TRANSMITIDA e positiva. Entao, se houver exatamente um
+  //    valor negativo na faixa plausivel, ele so pode ser o Rx.
+  //    Com mais de um candidato, e ambiguo - preferimos nao responder a
+  //    arriscar mostrar Tx (ou a potencia de outra ONU) como se fosse o sinal.
+  const todos = [];
+  const re2 = /(^|[\s:=(\[])(-\d{1,2}(?:[.,]\d{1,2})?)(?![\d.,])/g;
+  while ((m = re2.exec(s)) !== null) todos.push(parseFloat(m[2].replace(',', '.')));
+  const unicos = todos.filter(naFaixa).filter(function (v, i, a) { return a.indexOf(v) === i; });
+  return unicos.length === 1 ? unicos[0] : null;
+}
+
+function classificar(dbm) {
+  if (dbm === null) return null;
+  if (dbm >= -25) return { rotulo: 'Bom', nota: 'Seu sinal esta dentro do esperado.' };
+  if (dbm >= -27) return { rotulo: 'Atencao', nota: 'Sinal no limite. Pode oscilar em dias de chuva.' };
+  return { rotulo: 'Ruim', nota: 'Sinal abaixo do recomendado - precisa de visita tecnica.' };
+}
+
+const dbm = extrairSinal(info && (info.result !== undefined ? info.result : info));
+const cls = classificar(dbm);
+
+const linhas = [];
+if (base.type || onu.modelo) linhas.push('*Equipamento:* ' + (onu.modelo || base.type));
+if (onu.cto) linhas.push('*Caixa (CTO):* ' + onu.cto + (onu.porta_cto ? ' / porta ' + onu.porta_cto : ''));
+if (dbm !== null) {
+  linhas.push('*Sinal optico:* ' + dbm.toFixed(2) + ' dBm  (' + cls.rotulo + ')');
+}
+
+let reply_text;
+if (!linhas.length) {
+  reply_text = 'Nao consegui ler os dados do seu equipamento agora. ' +
+    'Digite *3* para abrir um chamado ou *5* para falar com um atendente.';
+} else {
+  reply_text = 'Diagnostico da sua conexao:\n\n' + linhas.join('\n');
+  if (cls) reply_text += '\n\n' + cls.nota;
+  if (dbm === null) {
+    reply_text += '\n\nNao consegui medir o sinal optico neste momento.';
+  }
+  if (cls && cls.rotulo === 'Ruim') {
+    reply_text += '\n\nDigite *3* para abrir um chamado tecnico.';
+  }
+  reply_text += '\n\nDigite *menu* para voltar ao inicio.';
+}
+
+const session_patch = Object.assign({}, prev.session_patch, { reset: true });
+
+return [{ json: Object.assign({}, prev, {
+  reply_text: reply_text,
+  next_step: 'menu',
+  session_patch: session_patch,
+  _audit: {
+    tipo: 'diagnostico',
+    phone: prev.phone,
+    cpf: prev.session.cpf,
+    contrato: prev.sgp_payload.contrato,
+    ssid_novo: null,
+    sucesso: linhas.length > 0,
+    resposta_sgp: { onu_id: prev.onu_id, cto: onu.cto || null, sinal_dbm: dbm },
+  },
+}) }];
+"""
+
+JS_ONU_NAO_ENCONTRADA = r"""
+const prev = $input.first().json;
+return [{ json: Object.assign({}, prev, {
+  reply_text: 'Nao localizei o equipamento de fibra vinculado ao seu contrato. ' +
+    'Isso pode acontecer se sua conexao nao for por fibra optica.\n\n' +
+    'Digite *3* para abrir um chamado ou *5* para falar com um atendente.',
+  next_step: 'menu',
+  session_patch: Object.assign({}, prev.session_patch, { reset: true }),
+}) }];
+"""
+
+
 # ---------------------------------------------------------------- Persistencia
 JS_PERSIST = r"""
 const item = $input.first().json;
@@ -610,13 +756,15 @@ nodes = [
 
     code_node("code-proc-cpf", "Processar Consulta CPF", JS_PROC_CPF, [1200, -320]),
 
-    # Apos confirmar identidade, o modulo financeiro ainda precisa de uma
-    # chamada ao SGP - por isso este segundo switch.
+    # Financeiro e diagnostico ainda precisam de mais uma chamada ao SGP
+    # depois que a identidade e confirmada - por isso este segundo switch.
     {"parameters": {"rules": {"values": [
         {"conditions": cond("={{ $json.sgp_action }}", "segunda_via"),
          "renameOutput": True, "outputKey": "segunda_via"},
+        {"conditions": cond("={{ $json.sgp_action }}", "diagnostico"),
+         "renameOutput": True, "outputKey": "diagnostico"},
     ]}, "options": {"fallbackOutput": "extra", "renameFallbackOutput": "responder"}},
-     "id": "switch-pos-id", "name": "Buscar faturas agora?",
+     "id": "switch-pos-id", "name": "Mais alguma chamada?",
      "type": "n8n-nodes-base.switch", "typeVersion": 3.2, "position": [1400, -320]},
 
     # ---- Modulo 1: Wi-Fi ----
@@ -660,6 +808,58 @@ nodes = [
      "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2, "position": [1000, 220]},
 
     code_node("code-proc-chamado", "Processar Chamado", JS_PROC_CHAMADO, [1200, 220]),
+
+    # ---- Modulo 4: Diagnostico da conexao (FTTH) ----
+    # Filtro por contrato: e o vinculo natural, mas nem toda base preenche.
+    # O node seguinte cobre o caso vazio caindo para busca por MAC.
+    {"parameters": {
+        "method": "GET", "url": "={{ $env.SGP_API_URL }}/api/fttx/onu/list/",
+        "sendQuery": True,
+        "queryParameters": {"parameters": [
+            {"name": "token", "value": "={{ $env.SGP_API_TOKEN }}"},
+            {"name": "app", "value": "={{ $env.SGP_APP_NAME }}"},
+            {"name": "contrato", "value": "={{ $json.sgp_payload.contrato }}"}]},
+        "options": {"response": {"response": {"neverError": True}}, "timeout": 25000}},
+     "id": "http-onu-list", "name": "SGP - Buscar ONU",
+     "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2, "position": [1600, -440]},
+
+    code_node("code-busca-onu", "Processar Busca ONU", JS_PROC_BUSCA_ONU, [1800, -440]),
+
+    {"parameters": {
+        "conditions": {"options": {"caseSensitive": True, "leftValue": "", "typeValidation": "loose"},
+                       "conditions": [{"leftValue": "={{ $json.onu_id }}", "rightValue": "",
+                                       "operator": {"type": "number", "operation": "exists",
+                                                    "singleValue": True}}],
+                       "combinator": "and"}, "options": {}},
+     "id": "if-onu", "name": "Achou a ONU?", "type": "n8n-nodes-base.if",
+     "typeVersion": 2.2, "position": [2000, -440]},
+
+    {"parameters": {
+        "method": "GET", "url": "={{ $env.SGP_API_URL }}/api/fttx/onu/{{ $json.onu_id }}/",
+        "sendQuery": True,
+        "queryParameters": {"parameters": [
+            {"name": "token", "value": "={{ $env.SGP_API_TOKEN }}"},
+            {"name": "app", "value": "={{ $env.SGP_APP_NAME }}"}]},
+        "options": {"response": {"response": {"neverError": True}}, "timeout": 25000}},
+     "id": "http-onu-detalhe", "name": "SGP - ONU Detalhe",
+     "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2, "position": [2200, -520]},
+
+    # Este endpoint abre um SSH ao vivo na OLT: e o mais lento do fluxo e o
+    # que mais falha (OLT fora do ar, hostname errado). neverError garante que
+    # o cliente receba pelo menos os dados estruturados de CTO e equipamento.
+    {"parameters": {
+        "method": "GET",
+        "url": "={{ $env.SGP_API_URL }}/api/fttx/onu/{{ $('Processar Busca ONU').first().json.onu_id }}/info/",
+        "sendQuery": True,
+        "queryParameters": {"parameters": [
+            {"name": "token", "value": "={{ $env.SGP_API_TOKEN }}"},
+            {"name": "app", "value": "={{ $env.SGP_APP_NAME }}"}]},
+        "options": {"response": {"response": {"neverError": True}}, "timeout": 45000}},
+     "id": "http-onu-info", "name": "SGP - ONU Info",
+     "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2, "position": [2400, -520]},
+
+    code_node("code-proc-diag", "Processar Diagnostico", JS_PROC_DIAGNOSTICO, [2600, -520]),
+    code_node("code-onu-404", "ONU Nao Encontrada", JS_ONU_NAO_ENCONTRADA, [2200, -360]),
 
     # ---- Persistencia e resposta ----
     code_node("code-persist", "Preparar Persistencia", JS_PERSIST, [2050, 0]),
@@ -725,11 +925,22 @@ connections = {
         to(PERSIST),                     # fallback: so responder
     ]},
     "SGP - Consultar Cliente": {"main": [to("Processar Consulta CPF")]},
-    "Processar Consulta CPF": {"main": [to("Buscar faturas agora?")]},
-    "Buscar faturas agora?": {"main": [
+    "Processar Consulta CPF": {"main": [to("Mais alguma chamada?")]},
+    "Mais alguma chamada?": {"main": [
         to("SGP - Segunda Via"),         # identidade ok + intent financeiro
+        to("SGP - Buscar ONU"),          # identidade ok + intent diagnostico
         to(PERSIST),                     # fallback: so responder
     ]},
+    "SGP - Buscar ONU": {"main": [to("Processar Busca ONU")]},
+    "Processar Busca ONU": {"main": [to("Achou a ONU?")]},
+    "Achou a ONU?": {"main": [
+        to("SGP - ONU Detalhe"),         # true
+        to("ONU Nao Encontrada"),        # false
+    ]},
+    "SGP - ONU Detalhe": {"main": [to("SGP - ONU Info")]},
+    "SGP - ONU Info": {"main": [to("Processar Diagnostico")]},
+    "Processar Diagnostico": {"main": [to(PERSIST)]},
+    "ONU Nao Encontrada": {"main": [to(PERSIST)]},
     "SGP - Segunda Via": {"main": [to("Processar Segunda Via")]},
     "Processar Segunda Via": {"main": [to(PERSIST)]},
     "SGP - Definir Wifi": {"main": [to("Processar Definir Wifi")]},
