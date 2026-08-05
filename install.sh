@@ -35,6 +35,27 @@ fi
 if [[ -f .env ]]; then
   warn ".env ja existe - mantendo o arquivo atual (nao vou sobrescrever seus segredos)."
 else
+  # Postgres so cria o usuario no primeiro boot, e o n8n grava a chave de
+  # criptografia dentro do volume dele. Se sobrarem volumes de uma instalacao
+  # anterior, os segredos novos do .env nao vao bater com o que esta gravado
+  # e os containers entram em crash loop ("password authentication failed" /
+  # "Mismatching encryption keys"). Melhor detectar isso aqui do que depois.
+  PROJ=$(basename "$PWD" | tr '[:upper:]' '[:lower:]' | tr -cd '[:alnum:]')
+  VOLS=$(docker volume ls -q --filter "name=^${PROJ}_" 2>/dev/null || true)
+  if [[ -n "$VOLS" ]]; then
+    warn "Existem volumes de uma instalacao anterior:"
+    echo "$VOLS" | sed 's/^/      /'
+    warn "Eles guardam a senha do banco e a chave do n8n ANTIGAS."
+    warn "Gerar um .env novo agora deixaria tudo em crash loop."
+    read -rp "Apagar esses volumes e comecar limpo? (perde workflows e o pareamento do WhatsApp) [s/N]: " WIPE
+    if [[ "${WIPE,,}" == "s" ]]; then
+      docker compose down -v >/dev/null 2>&1 || true
+      log "Volumes removidos."
+    else
+      die "Entao restaure o .env antigo (com os segredos originais) e rode de novo."
+    fi
+  fi
+
   log "Gerando .env com senhas aleatorias..."
   gen() { openssl rand -hex 24; }
 
