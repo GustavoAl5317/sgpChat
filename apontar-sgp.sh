@@ -20,12 +20,27 @@ echo "    SGP_API_URL   = ${SGP_API_URL:-}"
 echo "    SGP_APP_NAME  = ${SGP_APP_NAME:-}"
 echo
 
-read -rp "URL do SGP (ex: https://provedor.sgp.net.br): " NOVA_URL
+# Colar um valor no terminal costuma trazer um \n junto. Se so lermos uma vez,
+# esse newline extra e consumido pelo read SEGUINTE, que vem vazio e derruba o
+# script. Por isso: le em loop, ignora linha vazia e limpa espaco/CR.
+pergunta() {  # pergunta <texto> <nome-da-variavel>
+  local txt="$1" var="$2" val=""
+  while [[ -z "$val" ]]; do
+    read -rp "$txt" val || die "entrada interrompida"
+    val="$(printf '%s' "$val" | tr -d '\r' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+  done
+  printf -v "$var" '%s' "$val"
+}
+
+# Aceita tambem por argumento, para nao depender de colagem:
+#   bash apontar-sgp.sh <url> <token> <appname> [tipo-ocorrencia]
+NOVA_URL="${1:-}"; NOVO_TOKEN="${2:-}"; NOVO_APP="${3:-}"; TIPO_ARG="${4:-}"
+
+[[ -n "$NOVA_URL"   ]] || pergunta "URL do SGP (ex: https://provedor.sgp.net.br): " NOVA_URL
 NOVA_URL="${NOVA_URL%/}"
 [[ "$NOVA_URL" == https://* ]] || die "a URL precisa comecar com https://"
-read -rp "Token da API: " NOVO_TOKEN
-read -rp "Appname associado ao token: " NOVO_APP
-[[ -n "$NOVO_TOKEN" && -n "$NOVO_APP" ]] || die "token e appname sao obrigatorios"
+[[ -n "$NOVO_TOKEN" ]] || pergunta "Token da API: " NOVO_TOKEN
+[[ -n "$NOVO_APP"   ]] || pergunta "Appname associado ao token: " NOVO_APP
 
 # ---- valida antes de mexer no .env -------------------------------------
 log "Testando as credenciais..."
@@ -58,8 +73,13 @@ except Exception: print('      (nao consegui listar)')" 2>/dev/null || true
 echo
 echo "Escolha um tipo generico, de preferencia criado para o bot"
 echo "(ex: 'Autoatendimento WhatsApp'). Assim a equipe distingue na fila."
-read -rp "ID do tipo de ocorrencia [${SGP_OCORRENCIA_TIPO:-1}]: " NOVO_TIPO
-NOVO_TIPO=${NOVO_TIPO:-${SGP_OCORRENCIA_TIPO:-1}}
+if [[ -n "$TIPO_ARG" ]]; then
+  NOVO_TIPO="$TIPO_ARG"
+else
+  read -rp "ID do tipo de ocorrencia [${SGP_OCORRENCIA_TIPO:-1}]: " NOVO_TIPO || true
+  NOVO_TIPO="$(printf '%s' "${NOVO_TIPO:-}" | tr -cd '0-9')"
+  NOVO_TIPO=${NOVO_TIPO:-${SGP_OCORRENCIA_TIPO:-1}}
+fi
 
 # ---- aplicar -----------------------------------------------------------
 cp .env ".env.bak.$(date +%Y%m%d%H%M%S)"
