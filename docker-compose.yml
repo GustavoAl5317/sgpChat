@@ -120,7 +120,20 @@ services:
       WEBHOOK_EVENTS_QRCODE_UPDATED: "true"
       WEBHOOK_EVENTS_CONNECTION_UPDATE: "true"
 
-      LOG_LEVEL: ERROR
+      # Versao do WhatsApp Web que o Baileys anuncia ao parear. A versao embutida
+      # na imagem envelhece, e quando fica velha demais o WhatsApp recusa o
+      # pareamento com "codigo invalido" - o QR e gerado normalmente, mas o
+      # celular nao aceita. Pinar aqui resolve sem trocar a imagem da Evolution.
+      # Vazio = usa o default embutido. Para fixar, ponha WA_WEB_VERSION no .env
+      # no formato 2.3000.XXXXXXXXX.
+      CONFIG_SESSION_PHONE_VERSION: ${WA_WEB_VERSION:-}
+      # Nome que aparece em "Aparelhos conectados" no celular da empresa.
+      CONFIG_SESSION_PHONE_CLIENT: ${WA_CLIENT_NAME:-Atendimento}
+      CONFIG_SESSION_PHONE_NAME: Chrome
+
+      # ERROR esconde justamente o motivo de uma falha de pareamento. Suba para
+      # DEBUG no .env (LOG_LEVEL_EVOLUTION) enquanto estiver investigando.
+      LOG_LEVEL: ${LOG_LEVEL_EVOLUTION:-ERROR}
       DEL_INSTANCE: "false"
     volumes:
       - evolution_instances:/evolution/instances
