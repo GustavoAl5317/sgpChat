@@ -34,7 +34,7 @@
     {
       "parameters": {
         "operation": "executeQuery",
-        "query": "SELECT step, data FROM wa_sessions WHERE phone = $1",
+        "query": "SELECT step, data FROM wa_sessions WHERE phone = $1\nUNION ALL\nSELECT NULL, NULL WHERE NOT EXISTS (SELECT 1 FROM wa_sessions WHERE phone = $1)",
         "options": {
           "queryReplacement": "={{ [$json.phone] }}"
         }
@@ -638,7 +638,7 @@
     {
       "parameters": {
         "operation": "executeQuery",
-        "query": "INSERT INTO wa_sessions (phone, step, data, updated_at)\nVALUES ($1, $2, $3::jsonb, now())\nON CONFLICT (phone) DO UPDATE\n  SET step = EXCLUDED.step, data = EXCLUDED.data, updated_at = now();",
+        "query": "INSERT INTO wa_sessions (phone, step, data, updated_at)\nVALUES ($1, $2, $3::jsonb, now())\nON CONFLICT (phone) DO UPDATE\n  SET step = EXCLUDED.step, data = EXCLUDED.data, updated_at = now()\nRETURNING 1;",
         "options": {
           "queryReplacement": "={{ [$json.phone, $json.step, $json.data] }}"
         }
@@ -694,7 +694,7 @@
     {
       "parameters": {
         "operation": "executeQuery",
-        "query": "INSERT INTO wa_wifi_change_log\n  (phone, cpf, contrato_id, ssid_novo, sucesso, resposta_sgp, tipo)\nSELECT a->>'phone', a->>'cpf', a->>'contrato', a->>'ssid_novo',\n       (a->>'sucesso')::boolean, a->'resposta_sgp',\n       COALESCE(a->>'tipo', 'wifi')\nFROM (SELECT $1::jsonb AS a) t;",
+        "query": "INSERT INTO wa_wifi_change_log\n  (phone, cpf, contrato_id, ssid_novo, sucesso, resposta_sgp, tipo)\nSELECT a->>'phone', a->>'cpf', a->>'contrato', a->>'ssid_novo',\n       (a->>'sucesso')::boolean, a->'resposta_sgp',\n       COALESCE(a->>'tipo', 'wifi')\nFROM (SELECT $1::jsonb AS a) t\nRETURNING 1;",
         "options": {
           "queryReplacement": "={{ [$('Preparar Persistencia').first().json.audit] }}"
         }

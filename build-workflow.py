@@ -731,12 +731,13 @@ nodes = [
     code_node("code-extract", "Extract Inbound", JS_EXTRACT, [200, 0]),
 
     {"parameters": {"operation": "executeQuery",
-                    "query": "SELECT step, data FROM wa_sessions WHERE phone = $1",
+                    "query": ("SELECT step, data FROM wa_sessions WHERE phone = $1\n"
+                              "UNION ALL\n"
+                              "SELECT NULL, NULL WHERE NOT EXISTS (SELECT 1 FROM wa_sessions WHERE phone = $1)"),
                     "options": {"queryReplacement": "={{ [$json.phone] }}"}},
      "id": "pg-get", "name": "Get Session", "type": "n8n-nodes-base.postgres",
-     # Cliente novo nao tem linha em wa_sessions. Sem isto o SELECT devolve
-     # zero itens, o n8n encerra o ramo e o fluxo morre em silencio - com
-     # status "success", sem erro nenhum.
+     # O UNION ALL garante que o node devolva 1 item mesmo se o cliente for novo,
+     # impedindo que o n8n aborte silenciosamente o fluxo aqui por falta de dados.
      "alwaysOutputData": True,
      "typeVersion": 2.4, "position": [400, 0], "credentials": PG_CRED},
 
@@ -879,11 +880,12 @@ nodes = [
                     "query": ("INSERT INTO wa_sessions (phone, step, data, updated_at)\n"
                               "VALUES ($1, $2, $3::jsonb, now())\n"
                               "ON CONFLICT (phone) DO UPDATE\n"
-                              "  SET step = EXCLUDED.step, data = EXCLUDED.data, updated_at = now();"),
+                              "  SET step = EXCLUDED.step, data = EXCLUDED.data, updated_at = now()\n"
+                              "RETURNING 1;"),
                     "options": {"queryReplacement": "={{ [$json.phone, $json.step, $json.data] }}"}},
      "id": "pg-upsert", "name": "Upsert Session", "type": "n8n-nodes-base.postgres",
-     # O envio da resposta vem depois deste node: se o INSERT nao devolver
-     # linha, o cliente nunca recebe a mensagem.
+     # RETURNING 1 garante que o node passe 1 item para frente, caso contrario
+     # o n8n encerra o fluxo e a mensagem de resposta nunca e enviada.
      "alwaysOutputData": True,
      "typeVersion": 2.4, "position": [2250, 0], "credentials": PG_CRED},
 
@@ -903,7 +905,8 @@ nodes = [
                               "SELECT a->>'phone', a->>'cpf', a->>'contrato', a->>'ssid_novo',\n"
                               "       (a->>'sucesso')::boolean, a->'resposta_sgp',\n"
                               "       COALESCE(a->>'tipo', 'wifi')\n"
-                              "FROM (SELECT $1::jsonb AS a) t;"),
+                              "FROM (SELECT $1::jsonb AS a) t\n"
+                              "RETURNING 1;"),
                     "options": {"queryReplacement": "={{ [$('Preparar Persistencia').first().json.audit] }}"}},
      "id": "pg-audit", "name": "Gravar Auditoria", "type": "n8n-nodes-base.postgres",
      "typeVersion": 2.4, "position": [2650, -120], "credentials": PG_CRED},
