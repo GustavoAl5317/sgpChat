@@ -584,6 +584,14 @@ const info = $input.first().json;
 const onu = (detalhe && detalhe.onu) || {};
 const base = prev.onu_basica || {};
 
+function num(v) {
+  if (v === null || v === undefined || v === '') return null;
+  const n = parseFloat(String(v).replace(',', '.'));
+  return isFinite(n) ? n : null;
+}
+// Faixa fisicamente plausivel para potencia RECEBIDA em GPON.
+function naFaixa(v) { return v !== null && v < 0 && v >= -40; }
+
 // O ONU Info abre um SSH na OLT e devolve o texto cru do terminal - o formato
 // muda conforme o fabricante (Huawei, ZTE, Fiberhome, Datacom). Em vez de
 // confiar num parser especifico, procuramos um valor em dBm e so aceitamos se
@@ -594,8 +602,6 @@ function extrairSinal(txt) {
   if (!s || /Exception|Traceback|Could not resolve|timeout/i.test(s)) return null;
   // Se nem fala de potencia, nao ha o que extrair
   if (!/dbm|power|potencia/i.test(s)) return null;
-
-  const naFaixa = function (v) { return v < 0 && v >= -40; };
 
   // 1) Valor colado na unidade ("-22.07 dbm"): sem ambiguidade.
   const colados = [];
@@ -625,14 +631,39 @@ function classificar(dbm) {
   return { rotulo: 'Ruim', nota: 'Sinal abaixo do recomendado - precisa de visita tecnica.' };
 }
 
-const dbm = extrairSinal(info && (info.result !== undefined ? info.result : info));
+// Ordem de preferencia para o sinal:
+//   1) info_rx do /fttx/onu/list/ - o SGP ja coleta e guarda o valor numerico,
+//      entao nao ha nada para adivinhar. E o caminho normal.
+//   2) info_rx do detalhe da ONU, caso a lista venha sem.
+//   3) so em ultimo caso, o texto cru da OLT via extrairSinal() - que erra
+//      facil e por isso prefere devolver null a chutar.
+let dbm = null;
+let origem = null;
+if (naFaixa(num(base.info_rx))) { dbm = num(base.info_rx); origem = 'lista'; }
+if (dbm === null && naFaixa(num(onu.info_rx))) { dbm = num(onu.info_rx); origem = 'detalhe'; }
+if (dbm === null) {
+  dbm = extrairSinal(info && (info.result !== undefined ? info.result : info));
+  if (dbm !== null) origem = 'olt';
+}
 const cls = classificar(dbm);
+
+// info_date: "2026-08-07 07:02:09". Uma leitura de dias atras nao descreve a
+// conexao de agora - se estiver velha, avisa em vez de apresentar como atual.
+const medidoEm = String(base.info_date || onu.info_date || '');
+let horasAtras = null;
+const md = medidoEm.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/);
+if (md) {
+  const t = Date.UTC(+md[1], +md[2] - 1, +md[3], +md[4], +md[5]);
+  horasAtras = (Date.now() - t) / 3600000;
+}
 
 const linhas = [];
 if (base.type || onu.modelo) linhas.push('*Equipamento:* ' + (onu.modelo || base.type));
 if (onu.cto) linhas.push('*Caixa (CTO):* ' + onu.cto + (onu.porta_cto ? ' / porta ' + onu.porta_cto : ''));
 if (dbm !== null) {
-  linhas.push('*Sinal optico:* ' + dbm.toFixed(2) + ' dBm  (' + cls.rotulo + ')');
+  let l = '*Sinal optico:* ' + dbm.toFixed(2) + ' dBm  (' + cls.rotulo + ')';
+  if (md) l += '\n_medido em ' + md[3] + '/' + md[2] + ' as ' + md[4] + ':' + md[5] + '_';
+  linhas.push(l);
 }
 
 let reply_text;
@@ -644,6 +675,9 @@ if (!linhas.length) {
   if (cls) reply_text += '\n\n' + cls.nota;
   if (dbm === null) {
     reply_text += '\n\nNao consegui medir o sinal optico neste momento.';
+  } else if (horasAtras !== null && horasAtras > 48) {
+    reply_text += '\n\n_Obs.: essa e a ultima leitura registrada, nao uma medicao ' +
+      'de agora. Se o problema comecou depois disso, digite *3* para abrir um chamado._';
   }
   if (cls && cls.rotulo === 'Ruim') {
     reply_text += '\n\nDigite *3* para abrir um chamado tecnico.';
@@ -664,7 +698,8 @@ return [{ json: Object.assign({}, prev, {
     contrato: prev.sgp_payload.contrato,
     ssid_novo: null,
     sucesso: linhas.length > 0,
-    resposta_sgp: { onu_id: prev.onu_id, cto: onu.cto || null, sinal_dbm: dbm },
+    resposta_sgp: { onu_id: prev.onu_id, cto: onu.cto || null, sinal_dbm: dbm,
+                    sinal_origem: origem, medido_em: medidoEm || null },
   },
 }) }];
 """

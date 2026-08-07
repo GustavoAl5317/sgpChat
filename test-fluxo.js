@@ -16,7 +16,9 @@ function run(nodeName, inputs, refs) {
   return out.length ? out[0].json : null;
 }
 
-const RESP = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+// Sem argumento usa o fixture versionado (estrutura real, dados ficticios).
+const RESP = JSON.parse(fs.readFileSync(
+  process.argv[2] || 'fixtures/consultacliente-exemplo.json', 'utf8'));
 
 // A base demo cadastra os clientes com o CPF placeholder 000.000.000-00, que
 // (corretamente) nao passa na validacao de digito verificador. Para exercitar o
@@ -277,6 +279,53 @@ let tq = turn(sd, '4', PHONE_OUTRO); sd = tq.sessionRow;
 tq = turn(sd, CPF, PHONE_OUTRO, RESP, FATURAS, diagOk); sd = tq.sessionRow;
 if (tq.step === 'awaiting_contract_choice') tq = turn(sd, '1', PHONE_OUTRO, RESP, FATURAS, diagOk);
 check(tq.step === 'awaiting_second_factor', 'diagnostico exige 2FA como os demais');
+
+// --- Caminho preferencial: info_rx vem pronto no /fttx/onu/list/ -----------
+// Estrutura real capturada do SGP do provedor. Aqui nao ha texto de OLT para
+// parsear: o proprio SGP ja guarda a ultima leitura em info_rx. E o caminho que
+// vai rodar em producao, entao precisa valer mais que o fallback de regex.
+function onuReal(rx, quando) {
+  return [{ id: 451, olt_id: 2, olt_name: 'OLT ZTE', slot: 2, pon: 2, onuid: 1,
+    type: 'F670L', vlan: 28, mode: 'PPPoE', phy_addr: 'ZTEGDA11A47B',
+    info_rx: rx, info_tx: '2.326', info_olt_rx: '-20.017', info_date: quando,
+    service_contrato: 999, service_status: 1 }];
+}
+const AGORA = new Date(Date.now() - 3600000).toISOString().slice(0, 19).replace('T', ' ');
+const SEM_DETALHE = { onu: {} };
+
+const treal = ateIdentidade('4', PHONE_OK,
+  { lista: onuReal('-15.656', AGORA), detalhe: SEM_DETALHE, info: null }).t;
+console.log('  bot:', JSON.stringify(treal.reply).slice(0, 170));
+check(/-15\.66 dBm/.test(treal.reply), 'info_rx da lista vira o sinal exibido');
+check(/Bom/.test(treal.reply), '-15.66 dBm classificado como Bom');
+check(/F670L/.test(treal.reply), 'modelo da ONU vem da lista quando nao ha detalhe');
+check(treal.audit.resposta_sgp.sinal_origem === 'lista', 'auditoria registra a origem do sinal');
+
+// info_rx tem prioridade sobre o texto da OLT: se os dois existirem e
+// divergirem, o valor guardado pelo SGP e o confiavel.
+const tprio = ateIdentidade('4', PHONE_OK,
+  { lista: onuReal('-15.656', AGORA), detalhe: ONU_DETALHE, info: OLTS.huawei }).t;
+check(/-15\.66 dBm/.test(tprio.reply) && !/-19\.45/.test(tprio.reply),
+      'info_rx tem prioridade sobre o parser de texto da OLT');
+
+// Leitura antiga nao pode ser apresentada como se fosse de agora
+const tvelho = ateIdentidade('4', PHONE_OK,
+  { lista: onuReal('-15.656', '2026-01-02 03:04:05'), detalhe: SEM_DETALHE, info: null }).t;
+check(/ultima leitura registrada/.test(tvelho.reply), 'leitura antiga vem com ressalva');
+check(/02\/01 as 03:04/.test(tvelho.reply), 'mostra quando a leitura foi feita');
+
+// info_rx fora da faixa fisica (campo vazio, zero, lixo) nao pode virar sinal
+[['', 'vazio'], ['0', 'zero'], ['99', 'positivo absurdo'], ['-99', 'negativo absurdo']].forEach(
+  function (par) {
+    const t = ateIdentidade('4', PHONE_OK,
+      { lista: onuReal(par[0], AGORA), detalhe: SEM_DETALHE, info: null }).t;
+    check(!/Sinal optico/.test(t.reply), 'info_rx ' + par[1] + ' nao vira leitura de sinal');
+  });
+
+// Tx e positivo: nunca pode ser confundido com o sinal recebido
+const ttx = ateIdentidade('4', PHONE_OK,
+  { lista: onuReal('2.326', AGORA), detalhe: SEM_DETALHE, info: null }).t;
+check(!/Sinal optico/.test(ttx.reply), 'valor de Tx nao e exibido como sinal recebido');
 
 console.log('\n----------------------------------------');
 console.log(ok + ' passaram, ' + fail + ' falharam');

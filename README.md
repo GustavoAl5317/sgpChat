@@ -256,22 +256,25 @@ curl -s -X POST "$SGP_API_URL/api/ura/consultacliente/" -H "Content-Type: applic
   Deliberadamente **não** expus os endpoints de liquidar, cancelar,
   estornar ou pagar com cartão — são operações financeiras que um
   autoatendimento não deve executar sozinho.
-- **O sinal óptico depende do fabricante da OLT.** O `ONU Info` abre um SSH
-  ao vivo na OLT e devolve o texto cru do terminal — cada fabricante formata
-  diferente. O parser aceita o valor em dois casos: quando o número está
-  colado no `dBm`, ou quando existe **exatamente um** valor negativo na faixa
-  plausível (potência recebida é negativa e a transmitida é positiva, então
-  um único negativo só pode ser o Rx). Em qualquer outro caso ele responde
-  "não consegui medir" em vez de arriscar mostrar Tx como se fosse Rx.
-  Testado contra amostras de Huawei (tabular), ZTE e Fiberhome — mas com
-  amostras que eu construí, **não com saída real da OLT do provedor**.
-  Quando tiverem acesso à base real, mande a saída do `ONU Info` que eu
-  confirmo ou ajusto.
-- **O vínculo contrato → ONU não pôde ser verificado.** A base demo tem
-  7.071 ONUs e nenhuma ligada a contrato. O filtro `?contrato=` é
-  reconhecido pela API (id inexistente devolve 0, igual aos válidos), mas
-  sem um caso positivo não dá para confirmar. Por isso existe o plano B via
-  `servico_mac`.
+- **O sinal óptico sai pronto do `/api/fttx/onu/list/`** — resolvido contra a
+  base real do provedor (07/08/2026). A resposta já traz `info_rx` numérico
+  (`"-15.656"`), além de `info_tx`, `info_olt_rx` e `info_date` com o momento
+  da coleta. Não é preciso abrir SSH na OLT nem parsear texto de terminal.
+  O parser de texto continua no código como **último recurso**, para o caso de
+  uma base sem `info_rx` preenchido, mas não é o caminho normal.
+  Em qualquer origem o valor só é aceito na faixa fisicamente plausível
+  (negativo, até −40 dBm) — Tx é positivo e por isso nunca passa como se fosse
+  Rx. Se a leitura tiver mais de 48 h, a resposta avisa que é a última
+  registrada e não uma medição do momento.
+- **O vínculo contrato → ONU funciona** — confirmado na base real: o filtro
+  `?contrato=` devolveu a ONU correta, com `service_contrato` batendo. O plano
+  B via `servico_mac` continua no código para bases onde o vínculo esteja
+  vazio.
+- **CTO/porta não vêm da API.** O `/api/fttx/onu/list/` identifica a posição
+  por `olt_name`, `slot`, `pon` e `onuid`, mas não traz o nome da caixa nem a
+  porta do splitter. O código exibe CTO quando o campo existe no detalhe da
+  ONU; onde não existir, a linha simplesmente não aparece. Se a equipe precisa
+  disso no chat, o dado tem que ser cadastrado no SGP primeiro.
 - **PIX não implementado.** Existe `POST /api/ura/pagamento/pix/{fatura}`,
   mas a base demo não tem PIX configurado, então não consegui verificar o
   formato da resposta. Fácil de plugar depois.
