@@ -725,12 +725,24 @@ const merged = patch.reset ? {} : Object.assign({}, item.session || {}, patch);
 delete merged.reset;
 Object.keys(merged).forEach(function (k) { if (merged[k] === undefined) delete merged[k]; });
 
+// Chegar aqui sem texto e bug: todo caminho deveria ter montado uma resposta.
+// So que mandar texto vazio faz a Evolution responder 400, o node de envio
+// quebra e o cliente fica sem NADA - o pior desfecho possivel. Entao troca por
+// uma saida generica e deixa rastro no log para a gente achar o caminho furado.
+let texto = item.reply_text;
+if (texto === null || texto === undefined || String(texto).trim() === '') {
+  console.log('[bug] reply_text vazio | phone=' + (item.phone || '?') +
+              ' step=' + (item.next_step || '?') + ' acao=' + (item.sgp_action || '?'));
+  texto = 'Tive um problema para montar a resposta agora. Digite *menu* para ' +
+          'recomecar ou *5* para falar com um atendente.';
+}
+
 return [{
   json: {
     phone: item.phone,
     step: item.next_step,
     data: JSON.stringify(merged),
-    reply_text: item.reply_text,
+    reply_text: texto,
     audit: item._audit ? JSON.stringify(item._audit) : null,
   }
 }];
