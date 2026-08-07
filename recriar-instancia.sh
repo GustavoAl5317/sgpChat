@@ -3,9 +3,14 @@
 #
 # Use quando o QR e gerado mas o celular diz "codigo invalido". As duas causas
 # comuns sao:
-#   1) a versao do WhatsApp Web embutida no Baileys envelheceu - o WhatsApp
-#      recusa o pareamento. Resolve pinando WA_WEB_VERSION no .env.
-#   2) o estado da instancia corrompeu depois de uma queda - resolve recriando.
+#   1) o estado da instancia corrompeu depois de uma queda - resolve recriando.
+#   2) a versao do WhatsApp Web que o Baileys anuncia envelheceu - o WhatsApp
+#      recusa o pareamento. Nao da para pinar por env var nesta imagem (ver o
+#      comentario no docker-compose.yml): a versao vem de uma chamada a
+#      https://web.whatsapp.com/sw.js feita pelo proprio container. Por isso este
+#      script compara o que a Evolution anuncia com o que o WhatsApp publica
+#      agora - se divergirem, ou o container nao alcanca a web.whatsapp.com, ou
+#      a imagem esta defasada.
 #
 # Uso:  bash recriar-instancia.sh            (so diagnostica)
 #       bash recriar-instancia.sh --recriar  (apaga e recria a instancia)
@@ -32,16 +37,43 @@ api() {
 }
 
 log "Versoes em uso"
-api GET "/" | python3 -c "
+# O GET / da Evolution chama o mesmo fetchLatestWaWebVersion({}) que o socket
+# usa ao parear - entao o que ele responde aqui e exatamente o que vai ser
+# anunciado ao WhatsApp.
+ANUNCIADA=$(api GET "/" | python3 -c "
 import json,sys
 try:
     d=json.load(sys.stdin)
-    print('    Evolution API      :', d.get('version'))
-    print('    WhatsApp Web (Baileys):', d.get('whatsappWebVersion'))
+    print(d.get('version',''), d.get('whatsappWebVersion',''))
 except Exception:
-    print('    (nao consegui ler a resposta)')
-"
-echo "    CONFIG_SESSION_PHONE_VERSION no .env: ${WA_WEB_VERSION:-<vazio, usando o default da imagem>}"
+    print('', '')
+")
+EVO_VER=$(echo "$ANUNCIADA" | awk '{print $1}')
+WA_VER=$(echo "$ANUNCIADA" | awk '{print $2}')
+echo "    Evolution API          : ${EVO_VER:-<nao consegui ler>}"
+echo "    WhatsApp Web anunciada : ${WA_VER:-<nao consegui ler>}"
+
+# Fonte da verdade: o mesmo sw.js que o Baileys consulta. Buscado de dentro da
+# rede do container, para o teste valer para quem realmente faz a chamada.
+WA_ATUAL=$(docker run --rm --network "$NET" curlimages/curl:latest \
+  -s --max-time 20 https://web.whatsapp.com/sw.js 2>/dev/null \
+  | grep -oE 'client_revision[^0-9]{0,4}[0-9]+' | head -1 | grep -oE '[0-9]+$' || true)
+
+if [[ -z "$WA_ATUAL" ]]; then
+  warn "O container NAO conseguiu baixar https://web.whatsapp.com/sw.js."
+  warn "Sem isso o Baileys cai calado na versao embutida no pacote, que e velha"
+  warn "- e e exatamente assim que o QR vira \"codigo invalido\". Libere o egress"
+  warn "do container para web.whatsapp.com antes de tentar qualquer outra coisa."
+else
+  echo "    WhatsApp Web publicada : 2.3000.${WA_ATUAL}"
+  if [[ "$WA_VER" == "2.3000.${WA_ATUAL}" ]]; then
+    echo "    ${GRN}versao em dia - o pareamento nao esta falhando por versao${RST}"
+  else
+    warn "DIVERGENTE: a Evolution anuncia '${WA_VER}' e o WhatsApp esta em"
+    warn "'2.3000.${WA_ATUAL}'. Como a imagem nao aceita pinar por env var, o"
+    warn "caminho e subir a tag da Evolution no docker-compose.yml."
+  fi
+fi
 
 echo
 log "Estado atual da instancia '${EVOLUTION_INSTANCE}'"
@@ -55,12 +87,9 @@ Se o QR e recusado pelo celular, tente nesta ordem:
   1) Recriar a instancia (estado corrompido e a causa mais comum):
        bash recriar-instancia.sh --recriar
 
-  2) Se continuar recusando, a versao do WhatsApp Web esta velha. Pegue a
-     versao atual em https://web.whatsapp.com (F12 -> Console ->
-     window.Debug.VERSION) e fixe:
-       echo 'WA_WEB_VERSION=2.3000.XXXXXXXXX' >> .env
-       docker compose up -d --force-recreate evolution
-       bash conectar-whatsapp.sh --forcar-qr
+  2) Se o bloco de versoes acima acusou divergencia ou falha de download, o
+     problema e a versao anunciada - resolva por ali (egress ou tag da imagem),
+     nao adianta recriar a instancia.
 
   3) Para ver o motivo real da recusa, suba o log da Evolution:
        echo 'LOG_LEVEL_EVOLUTION=DEBUG' >> .env
