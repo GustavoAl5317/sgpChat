@@ -29,6 +29,9 @@ try: d=json.load(sys.stdin)
 except Exception: sys.exit(1)
 print(d$1 if isinstance(d, dict) else '')" 2>/dev/null || true; }
 
+FORCAR_QR=0
+[[ "${1:-}" == "--forcar-qr" ]] && FORCAR_QR=1
+
 echo "==> Verificando a instancia '${EVOLUTION_INSTANCE}'..."
 STATE=$(api GET "/instance/connectionState/${EVOLUTION_INSTANCE}")
 
@@ -38,6 +41,30 @@ if echo "$STATE" | grep -q '"state"'; then
     exit 0
   fi
   echo "    Instancia existe, mas desconectada."
+
+  # O socket do Baileys cai sozinho (queda de rede, restart, WhatsApp derrubando
+  # a sessao por inatividade) e o erro e sempre 428 "Connection Closed". Isso NAO
+  # significa que o aparelho foi desvinculado - se fosse, viria 401/loggedOut.
+  # Com a credencial intacta, um restart reconecta sem QR nenhum. Vale tentar:
+  # pedir o celular da empresa toda vez que o socket cai nao e sustentavel.
+  if [[ "$FORCAR_QR" -eq 0 ]]; then
+    echo "==> Tentando reconectar com a credencial existente (sem QR)..."
+    api PUT "/instance/restart/${EVOLUTION_INSTANCE}" >/dev/null
+    for i in $(seq 1 12); do
+      sleep 3
+      ST=$(api GET "/instance/connectionState/${EVOLUTION_INSTANCE}")
+      if echo "$ST" | grep -q '"open"'; then
+        echo "    Reconectou. Nao foi preciso parear de novo."
+        echo
+        echo "Confirme o envio com:  bash testar-envio.sh <telefone>"
+        exit 0
+      fi
+      printf '    aguardando... %ss\r' "$((i * 3))"
+    done
+    echo
+    echo "    Nao reconectou sozinho - a sessao foi encerrada de verdade."
+    echo "    Seguindo para o pareamento por QR."
+  fi
 else
   echo "==> Criando instancia..."
   api POST "/instance/create" \
@@ -78,5 +105,9 @@ No celular da EMPRESA:
 O QR expira em ~60s. Se expirar, rode este script de novo.
 
 Depois de escanear, confirme com:
-  bash conectar-whatsapp.sh
+  bash testar-envio.sh <telefone>
+
+Se a instancia cair de novo, rode este script primeiro: ele tenta reconectar
+sozinho com a credencial existente e so pede QR se a sessao tiver acabado
+mesmo. Para pular essa tentativa:  bash conectar-whatsapp.sh --forcar-qr
 EOF
