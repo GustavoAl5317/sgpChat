@@ -12,7 +12,8 @@
 # Por isso: use contrato de gente da equipe, nunca de cliente.
 #
 # Uso:
-#   bash testar-wifi.sh 999 888 777           sonda varios contratos
+#   bash testar-wifi.sh --cpf 05789755216     descobre os contratos e sonda
+#   bash testar-wifi.sh 999 888 777           sonda contratos que voce ja sabe
 #   bash testar-wifi.sh --aplicar 999 NomeNovo            troca so o nome
 #   bash testar-wifi.sh --aplicar 999 "" SenhaNova123     troca so a senha
 set -uo pipefail
@@ -38,6 +39,39 @@ sgp() {
     --data-urlencode "app=${SGP_APP_NAME}" \
     --data "$corpo"
 }
+
+# Descobre os contratos de um CPF pelo mesmo endpoint que o bot usa, para nao
+# ser preciso caçar o numero do contrato na interface do SGP antes de testar.
+if [[ "${1:-}" == "--cpf" ]]; then
+  CPF="$(printf '%s' "${2:-}" | tr -cd '0-9')"
+  [[ -n "$CPF" ]] || { echo "[x] uso: bash testar-wifi.sh --cpf <cpf>"; exit 1; }
+
+  RESP=$(docker run --rm --network "$NET" curlimages/curl:latest -s -m 30 \
+    -X POST "${SGP_API_URL}/api/ura/consultacliente/" \
+    -H 'Content-Type: application/json' \
+    -d "{\"token\":\"${SGP_API_TOKEN}\",\"app\":\"${SGP_APP_NAME}\",\"cpfcnpj\":\"${CPF}\"}")
+
+  set -- $(printf '%s' "$RESP" | python3 -c "
+import json,sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.stderr.write('    (nao consegui ler a resposta do consultacliente)\n'); raise SystemExit
+cs = d.get('contratos') or []
+if not cs:
+    sys.stderr.write('    (nenhum contrato para esse CPF)\n')
+for c in cs:
+    st = c.get('contratoStatus')
+    sys.stderr.write('    contrato %-8s status=%-2s %s\n' % (
+        c.get('contratoId'), st, c.get('contratoStatusDisplay') or ''))
+    if st == 1:
+        print(c.get('contratoId'))
+")
+  echo
+  [[ $# -gt 0 ]] || { echo "[x] nenhum contrato ATIVO para sondar."; exit 1; }
+  echo "${GRN}Contratos ativos a sondar:${RST} $*"
+  echo
+fi
 
 if [[ "${1:-}" == "--aplicar" ]]; then
   CONTRATO="${2:-}"; NOVO_SSID="${3:-}"; NOVA_SENHA="${4:-}"
