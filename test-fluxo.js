@@ -51,10 +51,14 @@ function inbound(text, phone) {
 // Um turno completo: mensagem do cliente -> resposta do bot + nova sessao.
 // `sgpResponse` e a resposta da chamada que o turno dispara; `faturas` so e
 // usada quando o turno encadeia consulta de cliente + busca de faturas.
-function turn(sessionRow, text, phone, sgpResponse, faturas, diag) {
+// `espiar` recebe o sgp_payload montado, para os testes conferirem o corpo que
+// sairia para o SGP - o node de HTTP nao roda aqui, entao e o unico ponto onde
+// da para verificar que campo nenhum viaja vazio.
+function turn(sessionRow, text, phone, sgpResponse, faturas, diag, espiar) {
   const inb = inbound(text, phone);
   if (!inb) return { skipped: true, sessionRow };
   let r = run('Parse & Route', sessionRow ? [sessionRow] : [], { 'Extract Inbound': inb });
+  if (espiar) espiar(r.sgp_payload || {});
 
   if (r.sgp_action === 'lookup_cpf') {
     r = run('Processar Consulta CPF', [sgpResponse], { 'Parse & Route': r });
@@ -120,7 +124,14 @@ console.log('Base demo: ' + CONTRATOS.length + ' contratos, ' + ativos.length + 
 // ============================ MODULO 1: Wi-Fi ============================
 console.log('\n=== Modulo 1: Wi-Fi ===');
 let { t, s } = ateIdentidade('1', PHONE_OK);
-check(t.step === 'awaiting_ssid', 'menu 1 + identidade -> pede SSID');
+check(t.step === 'awaiting_wifi_what', 'menu 1 + identidade -> pergunta o que alterar');
+check(/nome/i.test(t.reply) && /senha/i.test(t.reply), 'oferece nome, senha ou os dois');
+
+t = turn(s, 'sei la', PHONE_OK);
+check(t.step === 'awaiting_wifi_what', 'resposta fora de 1/2/3 repete a pergunta');
+
+t = turn(s, '3', PHONE_OK); s = t.sessionRow;
+check(t.step === 'awaiting_ssid', 'opcao 3 (nome e senha) -> pede o nome');
 t = turn(s, 'Wifi da Familia', PHONE_OK); s = t.sessionRow;
 check(t.step === 'awaiting_password', 'SSID aceito -> pede senha');
 t = turn(s, 'abc', PHONE_OK); s = t.sessionRow;
@@ -142,6 +153,7 @@ check(t.step === 'menu' && !t.audit, 'cancelar nao chama o SGP nem audita');
 
 // refaz ate a confirmacao para exercitar o caminho de sucesso
 ({ t, s } = ateIdentidade('1', PHONE_OK));
+t = turn(s, '3', PHONE_OK); s = t.sessionRow;
 t = turn(s, 'Wifi da Familia', PHONE_OK); s = t.sessionRow;
 t = turn(s, 'MinhaSenha123', PHONE_OK); s = t.sessionRow;
 t = turn(s, '1', PHONE_OK, { msg: 'Alteracoes realizadas com sucesso.', success: true });
@@ -149,6 +161,34 @@ check(t.step === 'menu', 'sucesso -> volta ao menu');
 check(Object.keys(t.data).length === 0, 'sessao limpa apos concluir');
 check(t.audit && t.audit.tipo === 'wifi', 'auditoria tipo=wifi');
 check(!/MinhaSenha123/.test(JSON.stringify(t.data)), 'senha nao fica guardada na sessao');
+
+// ---- So o nome: nao pede senha, e nao manda nada de senha ao SGP ----
+// Campo vazio no cpemanage APAGA - entao o corpo tem que sair sem nova_senha.
+({ t, s } = ateIdentidade('1', PHONE_OK));
+t = turn(s, '1', PHONE_OK); s = t.sessionRow;
+check(t.step === 'awaiting_ssid', 'opcao 1 (so nome) -> pede o nome');
+t = turn(s, 'RedeNova', PHONE_OK); s = t.sessionRow;
+check(t.step === 'awaiting_wifi_confirm', 'so nome -> vai direto a confirmacao, sem pedir senha');
+check(!/senha nova/i.test(t.reply), 'so nome -> nao ameaca trocar a senha');
+let corpo = null;
+t = turn(s, '1', PHONE_OK, { msg: 'ok', success: true }, null, null,
+         (p) => { corpo = p.form; });
+check(/novo_ssid=RedeNova/.test(corpo || ''), 'so nome -> corpo leva novo_ssid');
+check(!/nova_senha/.test(corpo || ''), 'so nome -> corpo NAO leva nova_senha');
+check(!/Senha/.test(t.reply), 'so nome -> sucesso nao fala de senha alterada');
+
+// ---- So a senha: nem pergunta o nome, e nao manda novo_ssid ----
+({ t, s } = ateIdentidade('1', PHONE_OK));
+t = turn(s, '2', PHONE_OK); s = t.sessionRow;
+check(t.step === 'awaiting_password', 'opcao 2 (so senha) -> pede a senha direto');
+t = turn(s, 'OutraSenha99', PHONE_OK); s = t.sessionRow;
+check(t.step === 'awaiting_wifi_confirm', 'so senha -> confirmacao');
+check(!/Novo nome/.test(t.reply), 'so senha -> confirmacao nao inventa nome novo');
+corpo = null;
+t = turn(s, '1', PHONE_OK, { msg: 'ok', success: true }, null, null,
+         (p) => { corpo = p.form; });
+check(/nova_senha=OutraSenha99/.test(corpo || ''), 'so senha -> corpo leva nova_senha');
+check(!/novo_ssid/.test(corpo || ''), 'so senha -> corpo NAO leva novo_ssid (apagaria a rede)');
 
 // roteador sem ACS (resposta real da demo)
 t = turn({ step: 'awaiting_wifi_confirm',
@@ -178,7 +218,7 @@ check(!/CPF/i.test(t.reply || ''), 'identidade recente -> nao pede CPF de novo')
 check(/Vencimento/.test(t.reply || ''), 'identidade recente -> ja mostra as faturas');
 
 t = turn(sessaoValidada(60 * 1000), '1', PHONE_OK);
-check(t.step === 'awaiting_ssid', 'identidade recente -> Wi-Fi vai direto ao nome da rede');
+check(t.step === 'awaiting_wifi_what', 'identidade recente -> Wi-Fi vai direto ao que alterar');
 check(t.data.ident_reaproveitada === true, 'auditoria sabe que a identidade foi reaproveitada');
 
 // Passados os 15 min, revalida do zero.
@@ -206,8 +246,12 @@ check(Object.keys(t.data).length === 0, 'digitar sair no menu encerra a sessao a
 t = turn(sessaoValidada(60 * 1000, { wifi_ssid_atual: 'RCNET-CASA' }), '1', PHONE_OK);
 check(/RCNET-CASA/.test(t.reply || ''), 'mostra o nome atual da rede quando o SGP tem');
 check(!/SSID/.test(t.reply || ''), 'nao usa o jargao SSID com o cliente');
-t = turn(sessaoValidada(60 * 1000, { wifi_ssid_atual: '' }), '1', PHONE_OK);
-check(!/SSID/.test(t.reply || '') && /redes Wi-Fi/.test(t.reply || ''),
+// Sem nome cadastrado o bot nao tem ancora para mostrar, mas segue perguntando
+// o que alterar - e so ao pedir o nome novo e que explica onde encontrar.
+let semNome = turn(sessaoValidada(60 * 1000, { wifi_ssid_atual: '' }), '1', PHONE_OK);
+check(!/SSID/.test(semNome.reply || ''), 'sem nome cadastrado, nao usa jargao');
+semNome = turn(semNome.sessionRow, '1', PHONE_OK);
+check(/redes Wi-Fi/.test(semNome.reply || ''),
       'sem nome cadastrado, explica onde encontrar');
 
 console.log('\n=== Modulo 2: Financeiro (2a via) ===');

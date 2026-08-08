@@ -128,6 +128,53 @@ function promptSsid(atualRaw) {
          '_É o nome que aparece quando você procura redes Wi-Fi no celular._';
 }
 
+// Trocar nome E senha juntos era imposicao nossa, nao do SGP: quem so queria
+// senha nova era obrigado a rebatizar a rede, e quem so queria renomear tinha
+// de inventar uma senha - derrubando a casa inteira por nada.
+function promptAlvoWifi(atualRaw) {
+  const atual = String(atualRaw || '').trim();
+  return (atual ? 'Sua rede Wi-Fi hoje se chama *' + atual + '*.\n\n' : '') +
+    'O que você quer alterar?\n\n' +
+    '*1* - Só o nome da rede\n' +
+    '*2* - Só a senha\n' +
+    '*3* - Nome e senha';
+}
+
+// O cpemanage escreve o que receber. Mandar novo_ssid vazio quando o cliente
+// so queria trocar a senha apagaria o nome da rede dele - por isso o corpo e
+// montado aqui, com APENAS os campos que ele pediu para mudar, em vez de
+// campos fixos no node de HTTP que sempre viajam (vazios ou nao).
+function formWifi(p) {
+  const partes = ['contrato=' + encodeURIComponent(p.contrato)];
+  if (p.ssid) {
+    partes.push('novo_ssid=' + encodeURIComponent(p.ssid));
+    partes.push('novo_ssid_5g=' + encodeURIComponent(p.ssid));
+  }
+  if (p.senha) {
+    partes.push('nova_senha=' + encodeURIComponent(p.senha));
+    partes.push('nova_senha_5g=' + encodeURIComponent(p.senha));
+  }
+  return partes.join('&');
+}
+
+// Tela de confirmacao: mostra so o que vai mudar. Repetir o nome atual como se
+// fosse alteracao faria o cliente achar que a rede vai ser renomeada.
+function confirmarWifi(ssid, senha) {
+  const linhas = [];
+  if (ssid) linhas.push('*Novo nome da rede:* ' + ssid);
+  if (senha) linhas.push('*Nova senha:* ' + senha);
+  let t = 'Confira antes de aplicar:\n\n' + linhas.join('\n') + '\n\n';
+  if (senha) {
+    t += 'Ao confirmar, *todos os aparelhos conectados* (celulares, TV, ' +
+         'câmeras) vão desconectar e precisarão ser reconectados com a ' +
+         'senha nova.\n\n';
+  } else {
+    t += 'Ao confirmar, os aparelhos conectados podem cair por alguns ' +
+         'instantes. A senha continua a mesma.\n\n';
+  }
+  return t + 'Digite *1* para confirmar ou *2* para cancelar.';
+}
+
 // Depois que a identidade e confirmada, para onde vai depende do que o
 // cliente escolheu no menu. Centralizado aqui para os tres modulos usarem
 // exatamente a mesma validacao.
@@ -144,8 +191,8 @@ function aposIdentidade(intent, s) {
     return { sgp_action: 'diagnostico', next_step: 'menu', reply_text: null,
              sgp_payload: { contrato: s.contrato, mac: s.mac || '' } };
   }
-  return { sgp_action: 'none', next_step: 'awaiting_ssid', sgp_payload: {},
-           reply_text: promptSsid(s.wifi_ssid_atual) };
+  return { sgp_action: 'none', next_step: 'awaiting_wifi_what', sgp_payload: {},
+           reply_text: promptAlvoWifi(s.wifi_ssid_atual) };
 }
 
 let reply_text = null;
@@ -271,6 +318,24 @@ switch (step) {
   }
 
   // ---------------- Modulo 1: Wi-Fi ----------------
+  case 'awaiting_wifi_what': {
+    if (text === '1' || text === '3') {
+      session_patch = { wifi_alvo: (text === '1' ? 'nome' : 'ambos') };
+      reply_text = promptSsid(session.wifi_ssid_atual);
+      next_step = 'awaiting_ssid';
+    } else if (text === '2') {
+      session_patch = { wifi_alvo: 'senha' };
+      reply_text = 'Envie a nova senha do Wi-Fi, de 8 a 63 caracteres, sem acentos.\n' +
+        '_Anote onde conseguir consultar: todo aparelho da casa vai precisar ' +
+        'dela para voltar a conectar._';
+      next_step = 'awaiting_password';
+    } else {
+      reply_text = 'Não entendi. ' + promptAlvoWifi(session.wifi_ssid_atual);
+      next_step = 'awaiting_wifi_what';
+    }
+    break;
+  }
+
   case 'awaiting_ssid': {
     // SSID: 1-32 chars, sem caracteres de controle
     if (text.length < 1 || text.length > 32) {
@@ -279,6 +344,11 @@ switch (step) {
     } else if (/[\x00-\x1f]/.test(text)) {
       reply_text = 'O nome da rede tem caracteres inválidos. Envie novamente:';
       next_step = 'awaiting_ssid';
+    } else if (session.wifi_alvo === 'nome') {
+      // So o nome: nao ha senha a pedir, vai direto para a confirmacao.
+      reply_text = confirmarWifi(text, null);
+      next_step = 'awaiting_wifi_confirm';
+      session_patch = { ssid_new: text };
     } else {
       reply_text = 'Nome definido como "' + text + '".\n\n' +
         'Agora envie a nova senha do Wi-Fi, de 8 a 63 caracteres, sem acentos.\n' +
@@ -302,13 +372,8 @@ switch (step) {
       // O cpemanage nao tem chamada de leitura: toda requisicao ESCREVE no
       // roteador. Sem esta confirmacao, uma mensagem enviada por engano ja
       // derruba a casa inteira, e nao ha como desfazer.
-      reply_text = 'Confira antes de aplicar:\n\n' +
-        '*Nome da rede:* ' + session.ssid_new + '\n' +
-        '*Senha:* ' + text + '\n\n' +
-        'Ao confirmar, *todos os aparelhos conectados* (celulares, TV, ' +
-        'câmeras) vão desconectar e precisarão ser reconectados com a ' +
-        'senha nova.\n\n' +
-        'Digite *1* para confirmar ou *2* para cancelar.';
+      reply_text = confirmarWifi(
+        session.wifi_alvo === 'senha' ? null : session.ssid_new, text);
       next_step = 'awaiting_wifi_confirm';
       session_patch = { senha_new: text };
     }
@@ -317,13 +382,19 @@ switch (step) {
 
   case 'awaiting_wifi_confirm': {
     if (text === '1') {
+      // So viaja o que o cliente pediu para mudar: campo em branco no
+      // cpemanage nao e "manter", e "apagar".
+      const alvo = session.wifi_alvo || 'ambos';
+      const p = { contrato: session.contrato,
+                  ssid:  alvo === 'senha' ? null : (session.ssid_new || null),
+                  senha: alvo === 'nome'  ? null : (session.senha_new || null) };
+      p.form = formWifi(p);
       sgp_action = 'definir_wifi';
-      sgp_payload = { contrato: session.contrato, ssid: session.ssid_new,
-                      senha: session.senha_new };
+      sgp_payload = p;
     } else if (text === '2') {
       reply_text = 'Alteração cancelada. Sua rede continua como estava.\n\n' + MENU;
       next_step = 'menu';
-      session_patch = { ssid_new: undefined, senha_new: undefined };
+      session_patch = { ssid_new: undefined, senha_new: undefined, wifi_alvo: undefined };
     } else {
       reply_text = 'Digite *1* para confirmar a alteração ou *2* para cancelar.';
       next_step = 'awaiting_wifi_confirm';
@@ -388,6 +459,53 @@ function promptSsid(atualRaw) {
          '_É o nome que aparece quando você procura redes Wi-Fi no celular._';
 }
 
+// Trocar nome E senha juntos era imposicao nossa, nao do SGP: quem so queria
+// senha nova era obrigado a rebatizar a rede, e quem so queria renomear tinha
+// de inventar uma senha - derrubando a casa inteira por nada.
+function promptAlvoWifi(atualRaw) {
+  const atual = String(atualRaw || '').trim();
+  return (atual ? 'Sua rede Wi-Fi hoje se chama *' + atual + '*.\n\n' : '') +
+    'O que você quer alterar?\n\n' +
+    '*1* - Só o nome da rede\n' +
+    '*2* - Só a senha\n' +
+    '*3* - Nome e senha';
+}
+
+// O cpemanage escreve o que receber. Mandar novo_ssid vazio quando o cliente
+// so queria trocar a senha apagaria o nome da rede dele - por isso o corpo e
+// montado aqui, com APENAS os campos que ele pediu para mudar, em vez de
+// campos fixos no node de HTTP que sempre viajam (vazios ou nao).
+function formWifi(p) {
+  const partes = ['contrato=' + encodeURIComponent(p.contrato)];
+  if (p.ssid) {
+    partes.push('novo_ssid=' + encodeURIComponent(p.ssid));
+    partes.push('novo_ssid_5g=' + encodeURIComponent(p.ssid));
+  }
+  if (p.senha) {
+    partes.push('nova_senha=' + encodeURIComponent(p.senha));
+    partes.push('nova_senha_5g=' + encodeURIComponent(p.senha));
+  }
+  return partes.join('&');
+}
+
+// Tela de confirmacao: mostra so o que vai mudar. Repetir o nome atual como se
+// fosse alteracao faria o cliente achar que a rede vai ser renomeada.
+function confirmarWifi(ssid, senha) {
+  const linhas = [];
+  if (ssid) linhas.push('*Novo nome da rede:* ' + ssid);
+  if (senha) linhas.push('*Nova senha:* ' + senha);
+  let t = 'Confira antes de aplicar:\n\n' + linhas.join('\n') + '\n\n';
+  if (senha) {
+    t += 'Ao confirmar, *todos os aparelhos conectados* (celulares, TV, ' +
+         'câmeras) vão desconectar e precisarão ser reconectados com a ' +
+         'senha nova.\n\n';
+  } else {
+    t += 'Ao confirmar, os aparelhos conectados podem cair por alguns ' +
+         'instantes. A senha continua a mesma.\n\n';
+  }
+  return t + 'Digite *1* para confirmar ou *2* para cancelar.';
+}
+
 function aposIdentidade(it, contrato, mac, ssidAtual) {
   if (it === 'financeiro') {
     return { sgp_action: 'segunda_via', next_step: 'menu', reply_text: null,
@@ -401,8 +519,8 @@ function aposIdentidade(it, contrato, mac, ssidAtual) {
     return { sgp_action: 'none', next_step: 'awaiting_support_desc', sgp_payload: {},
              reply_text: 'Descreva o problema que você está enfrentando (em uma mensagem):' };
   }
-  return { sgp_action: 'none', next_step: 'awaiting_ssid', sgp_payload: {},
-           reply_text: promptSsid(ssidAtual) };
+  return { sgp_action: 'none', next_step: 'awaiting_wifi_what', sgp_payload: {},
+           reply_text: promptAlvoWifi(ssidAtual) };
 }
 
 // Resposta do SGP: { msg, contratos: [ ... ] }
@@ -507,13 +625,24 @@ const session_patch = Object.assign({}, prev.session_patch);
 // JSONB de wa_sessions ate a limpeza de 30 min.
 session_patch.senha_new = undefined;
 session_patch.ssid_new = undefined;
+session_patch.wifi_alvo = undefined;
 
 // Resposta do SGP: { msg, success }
 const sucesso = !!(resp && resp.success === true);
+const ssidNovo = prev.sgp_payload && prev.sgp_payload.ssid;
+const senhaNova = prev.sgp_payload && prev.sgp_payload.senha;
 
 if (sucesso) {
-  reply_text = 'Pronto! Sua rede Wi-Fi foi atualizada:\n\n*Nome:* ' + prev.sgp_payload.ssid +
-    '\n\nO roteador pode levar alguns minutos para aplicar. Seus aparelhos vão precisar conectar de novo com a nova senha.\n\nDigite *menu* se precisar de mais alguma coisa.';
+  // Confirma exatamente o que mudou. Dizer "nome e senha atualizados" para
+  // quem so trocou a senha faz o cliente procurar uma rede que nao existe.
+  reply_text = 'Pronto! Sua rede Wi-Fi foi atualizada:\n';
+  if (ssidNovo) reply_text += '\n*Nome:* ' + ssidNovo;
+  if (senhaNova) reply_text += '\n*Senha:* alterada';
+  reply_text += '\n\nO roteador pode levar alguns minutos para aplicar. ';
+  reply_text += senhaNova
+    ? 'Seus aparelhos vão precisar conectar de novo com a nova senha.'
+    : 'Seus aparelhos devem reconectar sozinhos com a senha de sempre.';
+  reply_text += '\n\nDigite *menu* se precisar de mais alguma coisa.';
   next_step = 'menu';
   session_patch.reset = true;
 } else {
@@ -944,15 +1073,17 @@ nodes = [
      "type": "n8n-nodes-base.switch", "typeVersion": 3.2, "position": [1400, -320]},
 
     # ---- Modulo 1: Wi-Fi ----
+    # Corpo montado como texto em vez de campos fixos: com bodyParameters todos
+    # os cinco campos viajam sempre, e quem so queria trocar a senha mandaria
+    # novo_ssid vazio - o que APAGA o nome da rede em vez de manter. O
+    # sgp_payload.form ja vem com apenas o que o cliente pediu para mudar.
     {"parameters": {
         "method": "POST", "url": "={{ $env.SGP_API_URL }}/api/ura/cpemanage/",
-        "sendBody": True, "contentType": "form-urlencoded",
-        "bodyParameters": {"parameters": SGP_AUTH + [
-            {"name": "contrato", "value": "={{ $json.sgp_payload.contrato }}"},
-            {"name": "novo_ssid", "value": "={{ $json.sgp_payload.ssid }}"},
-            {"name": "nova_senha", "value": "={{ $json.sgp_payload.senha }}"},
-            {"name": "novo_ssid_5g", "value": "={{ $json.sgp_payload.ssid }}"},
-            {"name": "nova_senha_5g", "value": "={{ $json.sgp_payload.senha }}"}]},
+        "sendBody": True, "contentType": "raw",
+        "rawContentType": "application/x-www-form-urlencoded",
+        "body": ("={{ 'token=' + encodeURIComponent($env.SGP_API_TOKEN) +"
+                 " '&app=' + encodeURIComponent($env.SGP_APP_NAME) +"
+                 " '&' + $json.sgp_payload.form }}"),
         "options": {"response": {"response": {"neverError": True}}, "timeout": 30000}},
      "id": "http-wifi", "name": "SGP - Definir Wifi",
      "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2, "position": [1000, 0]},
