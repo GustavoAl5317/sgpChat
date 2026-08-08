@@ -82,6 +82,18 @@ if [[ "${1:-}" == "--aplicar" ]]; then
   [[ -n "$CONTRATO" ]] || { echo "[x] informe o contrato"; exit 1; }
   [[ -n "$NOVO_SSID$NOVA_SENHA" ]] || { echo "[x] informe ao menos nome ou senha"; exit 1; }
 
+  # Colar o exemplo da documentacao junto com os <> e erro facil de cometer e
+  # caro de desfazer: sem leitura no cpemanage, ninguem descobre depois qual era
+  # o nome original da rede. Melhor recusar aqui do que confiar no "tem certeza".
+  for V in "$NOVO_SSID" "$NOVA_SENHA"; do
+    case "$V" in
+      *"<"*|*">"*)
+        echo "${RED}[x]${RST} \"$V\" parece um espaco reservado, nao um valor."
+        echo "    Troque pelo nome/senha de verdade antes de rodar."
+        exit 1 ;;
+    esac
+  done
+
   echo "${RED}[!]${RST} Isso ESCREVE no roteador do contrato ${CONTRATO}."
   [[ -n "$NOVO_SSID"  ]] && echo "    novo nome : ${NOVO_SSID}"
   [[ -n "$NOVA_SENHA" ]] && echo "    nova senha: ${NOVA_SENHA}"
