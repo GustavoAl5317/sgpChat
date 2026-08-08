@@ -92,13 +92,13 @@ function normDate(v) {
   return s.replace(/\D/g, '');
 }
 
-const MENU = 'Ola! Sou o atendimento automatico.\n\n' +
+const MENU = 'Olá! Sou o atendimento automático.\n\n' +
   '*1* - Alterar nome/senha do Wi-Fi\n' +
-  '*2* - 2a via de boleto\n' +
+  '*2* - 2ª via de boleto\n' +
   '*3* - Abrir chamado de suporte\n' +
-  '*4* - Diagnostico da minha conexao\n' +
+  '*4* - Diagnóstico da minha conexão\n' +
   '*5* - Falar com atendente\n\n' +
-  'Digite o numero da opcao desejada.';
+  'Digite o número da opção desejada.';
 
 // Depois que a identidade e confirmada, para onde vai depende do que o
 // cliente escolheu no menu. Centralizado aqui para os tres modulos usarem
@@ -109,13 +109,13 @@ function aposIdentidade(intent) {
   }
   if (intent === 'suporte') {
     return { sgp_action: 'none', next_step: 'awaiting_support_desc',
-             reply_text: 'Descreva o problema que voce esta enfrentando (em uma mensagem):' };
+             reply_text: 'Descreva o problema que você está enfrentando (em uma mensagem):' };
   }
   if (intent === 'diagnostico') {
     return { sgp_action: 'diagnostico', next_step: 'menu', reply_text: null };
   }
   return { sgp_action: 'none', next_step: 'awaiting_ssid',
-           reply_text: 'Qual sera o novo nome (SSID) da sua rede Wi-Fi?' };
+           reply_text: 'Qual será o novo nome (SSID) da sua rede Wi-Fi?' };
 }
 
 let reply_text = null;
@@ -135,7 +135,7 @@ switch (step) {
   case 'menu': {
     if (['1', '2', '3', '4'].includes(text)) {
       const intents = { '1': 'wifi', '2': 'financeiro', '3': 'suporte', '4': 'diagnostico' };
-      reply_text = 'Para sua seguranca, informe o CPF/CNPJ do titular da conta (somente numeros):';
+      reply_text = 'Para sua segurança, informe o CPF/CNPJ do titular da conta (somente números):';
       next_step = 'awaiting_cpf';
       session_patch = { attempts: 0, intent: intents[text] };
     } else if (text === '5') {
@@ -152,11 +152,11 @@ switch (step) {
     if (!docIsValid(text)) {
       const n = attempts + 1;
       if (n >= 3) {
-        reply_text = 'Nao consegui validar seu documento. Vou te transferir para um atendente humano.';
+        reply_text = 'Não consegui validar seu documento. Vou te transferir para um atendente humano.';
         next_step = 'human_handoff';
         session_patch = { attempts: 0 };
       } else {
-        reply_text = 'CPF/CNPJ invalido. Digite novamente, apenas numeros (tentativa ' + n + '/3):';
+        reply_text = 'CPF/CNPJ inválido. Digite novamente, apenas números (tentativa ' + n + '/3):';
         next_step = 'awaiting_cpf';
         session_patch = { attempts: n };
       }
@@ -172,7 +172,7 @@ switch (step) {
     const opcoes = session.contract_options || [];
     const idx = parseInt(text, 10);
     if (!idx || idx < 1 || idx > opcoes.length) {
-      reply_text = 'Opcao invalida. Responda com o numero do contrato desejado (1 a ' + opcoes.length + '):';
+      reply_text = 'Opção inválida. Responda com o número do contrato desejado (1 a ' + opcoes.length + '):';
       next_step = 'awaiting_contract_choice';
     } else {
       const esc = opcoes[idx - 1];
@@ -207,11 +207,11 @@ switch (step) {
     } else {
       const n = attempts + 1;
       if (n >= 3) {
-        reply_text = 'Nao consegui confirmar sua identidade. Vou te transferir para um atendente humano.';
+        reply_text = 'Não consegui confirmar sua identidade. Vou te transferir para um atendente humano.';
         next_step = 'human_handoff';
         session_patch = { attempts: 0, second_factor_target: undefined };
       } else {
-        reply_text = 'Data nao confere. Envie no formato DD/MM/AAAA (tentativa ' + n + '/3):';
+        reply_text = 'Data não confere. Envie no formato DD/MM/AAAA (tentativa ' + n + '/3):';
         next_step = 'awaiting_second_factor';
         session_patch = { attempts: n };
       }
@@ -226,7 +226,7 @@ switch (step) {
       reply_text = 'O nome da rede deve ter entre 1 e 32 caracteres. Envie novamente:';
       next_step = 'awaiting_ssid';
     } else if (/[\x00-\x1f]/.test(text)) {
-      reply_text = 'O nome da rede tem caracteres invalidos. Envie novamente:';
+      reply_text = 'O nome da rede tem caracteres inválidos. Envie novamente:';
       next_step = 'awaiting_ssid';
     } else {
       reply_text = 'Nome definido como "' + text + '".\n\nAgora envie a nova senha do Wi-Fi (8 a 63 caracteres):';
@@ -242,7 +242,7 @@ switch (step) {
       reply_text = 'A senha precisa ter entre 8 e 63 caracteres. Envie novamente:';
       next_step = 'awaiting_password';
     } else if (!/^[\x20-\x7e]+$/.test(text)) {
-      reply_text = 'A senha so pode ter letras, numeros e simbolos comuns (sem acentos/emoji). Envie novamente:';
+      reply_text = 'A senha só pode ter letras, números e símbolos comuns (sem acentos/emoji). Envie novamente:';
       next_step = 'awaiting_password';
     } else {
       sgp_action = 'definir_wifi';
@@ -254,10 +254,10 @@ switch (step) {
   // ---------------- Modulo 3: Suporte ----------------
   case 'awaiting_support_desc': {
     if (text.length < 10) {
-      reply_text = 'Preciso de um pouco mais de detalhe para abrir o chamado (minimo 10 caracteres). Descreva o problema:';
+      reply_text = 'Preciso de um pouco mais de detalhe para abrir o chamado (mínimo 10 caracteres). Descreva o problema:';
       next_step = 'awaiting_support_desc';
     } else if (text.length > 1000) {
-      reply_text = 'Descricao muito longa. Resuma em ate 1000 caracteres:';
+      reply_text = 'Descrição muito longa. Resuma em até 1000 caracteres:';
       next_step = 'awaiting_support_desc';
     } else {
       sgp_action = 'abrir_chamado';
@@ -267,7 +267,7 @@ switch (step) {
   }
 
   case 'human_handoff': {
-    reply_text = 'Voce esta na fila de atendimento humano. Em breve alguem falara com voce por aqui.\n\nDigite *menu* para voltar ao inicio.';
+    reply_text = 'Você está na fila de atendimento humano. Em breve alguém falará com você por aqui.\n\nDigite *menu* para voltar ao início.';
     next_step = 'human_handoff';
     break;
   }
@@ -306,10 +306,10 @@ function aposIdentidade(it, contrato, mac) {
   }
   if (it === 'suporte') {
     return { sgp_action: 'none', next_step: 'awaiting_support_desc', sgp_payload: {},
-             reply_text: 'Descreva o problema que voce esta enfrentando (em uma mensagem):' };
+             reply_text: 'Descreva o problema que você está enfrentando (em uma mensagem):' };
   }
   return { sgp_action: 'none', next_step: 'awaiting_ssid', sgp_payload: {},
-           reply_text: 'Qual sera o novo nome (SSID) da sua rede Wi-Fi?' };
+           reply_text: 'Qual será o novo nome (SSID) da sua rede Wi-Fi?' };
 }
 
 // Resposta do SGP: { msg, contratos: [ ... ] }
@@ -318,10 +318,10 @@ const contratos = Array.isArray(resp && resp.contratos) ? resp.contratos : [];
 const ativos = contratos.filter(function (c) { return c.contratoStatus === 1; });
 
 if (contratos.length === 0) {
-  reply_text = 'Nao encontrei nenhum contrato com esse CPF/CNPJ. Confira o numero ou digite *4* para falar com um atendente.';
+  reply_text = 'Não encontrei nenhum contrato com esse CPF/CNPJ. Confira o número ou digite *5* para falar com um atendente.';
   next_step = 'menu';
 } else if (ativos.length === 0) {
-  reply_text = 'Localizei seu cadastro, mas nao ha contrato ativo no momento. Vou te transferir para um atendente.';
+  reply_text = 'Localizei seu cadastro, mas não há contrato ativo no momento. Vou te transferir para um atendente.';
   next_step = 'human_handoff';
 } else {
   const ref = ativos[0];
@@ -350,7 +350,7 @@ if (contratos.length === 0) {
   }
 
   const listaContratos = function () {
-    return 'Voce tem mais de um contrato ativo. Qual deles?\n\n' +
+    return 'Você tem mais de um contrato ativo. Qual deles?\n\n' +
       session_patch.contract_options.map(function (o, i) { return '*' + (i + 1) + '* - ' + o.label; }).join('\n');
   };
 
@@ -372,12 +372,12 @@ if (contratos.length === 0) {
     // Numero nao cadastrado -> exige data de nascimento
     const nasc = ref.dataNascimento || '';
     if (!nasc) {
-      reply_text = 'Nao consegui confirmar sua identidade automaticamente. Vou te transferir para um atendente.';
+      reply_text = 'Não consegui confirmar sua identidade automaticamente. Vou te transferir para um atendente.';
       next_step = 'human_handoff';
     } else if (ativos.length === 1) {
       session_patch.second_factor_target = nasc;
       session_patch.attempts = 0;
-      reply_text = 'Esse numero nao e o cadastrado no contrato. Para confirmar que e voce, informe a data de nascimento do titular (DD/MM/AAAA):';
+      reply_text = 'Esse número não é o cadastrado no contrato. Para confirmar que é você, informe a data de nascimento do titular (DD/MM/AAAA):';
       next_step = 'awaiting_second_factor';
     } else {
       session_patch.second_factor_target = nasc;
@@ -407,16 +407,16 @@ const sucesso = !!(resp && resp.success === true);
 
 if (sucesso) {
   reply_text = 'Pronto! Sua rede Wi-Fi foi atualizada:\n\n*Nome:* ' + prev.sgp_payload.ssid +
-    '\n\nO roteador pode levar alguns minutos para aplicar. Seus aparelhos vao precisar conectar de novo com a nova senha.\n\nDigite *menu* se precisar de mais alguma coisa.';
+    '\n\nO roteador pode levar alguns minutos para aplicar. Seus aparelhos vão precisar conectar de novo com a nova senha.\n\nDigite *menu* se precisar de mais alguma coisa.';
   next_step = 'menu';
   session_patch.reset = true;
 } else {
   const msg = (resp && resp.msg) ? String(resp.msg) : '';
   if (/Gerenciador de CPE/i.test(msg)) {
-    reply_text = 'Seu roteador nao esta habilitado para configuracao remota. Vou te transferir para um atendente resolver isso.';
+    reply_text = 'Seu roteador não está habilitado para configuração remota. Vou te transferir para um atendente resolver isso.';
     next_step = 'human_handoff';
   } else {
-    reply_text = 'Nao consegui aplicar a alteracao agora. Tente novamente em alguns minutos ou digite *4* para falar com um atendente.';
+    reply_text = 'Não consegui aplicar a alteração agora. Tente novamente em alguns minutos ou digite *5* para falar com um atendente.';
     next_step = 'menu';
   }
 }
@@ -458,7 +458,7 @@ function dataBR(iso) {
 let reply_text, next_step = 'menu';
 
 if (!links.length) {
-  reply_text = 'Boa noticia: voce nao tem nenhuma fatura em aberto no momento.\n\nDigite *menu* para voltar ao inicio.';
+  reply_text = 'Boa notícia: você não tem nenhuma fatura em aberto no momento.\n\nDigite *menu* para voltar ao início.';
 } else {
   // Mais antigas primeiro (as vencidas importam mais). Limita a 3 para nao
   // despejar uma parede de texto - base real pode ter dezenas de titulos.
@@ -470,22 +470,22 @@ if (!links.length) {
   const blocos = mostrar.map(function (f) {
     let t = '*Vencimento:* ' + dataBR(f.vencimento) + '\n*Valor:* ' + brl(f.valor);
     if (Number(f.juros || 0) > 0 || Number(f.multa || 0) > 0) {
-      t += '  _(ja com juros e multa)_';
+      t += '  _(já com juros e multa)_';
     }
-    if (f.linhadigitavel) t += '\n*Linha digitavel:*\n`' + f.linhadigitavel + '`';
+    if (f.linhadigitavel) t += '\n*Linha digitável:*\n`' + f.linhadigitavel + '`';
     if (f.link) t += '\n' + f.link;
     return t;
   });
 
   reply_text = (links.length > 3
-      ? 'Voce tem *' + links.length + '* faturas em aberto. Mostrando as ' + mostrar.length + ' mais antigas:\n\n'
-      : (links.length === 1 ? 'Aqui esta sua fatura em aberto:\n\n'
-                            : 'Voce tem *' + links.length + '* faturas em aberto:\n\n'))
+      ? 'Você tem *' + links.length + '* faturas em aberto. Mostrando as ' + mostrar.length + ' mais antigas:\n\n'
+      : (links.length === 1 ? 'Aqui está sua fatura em aberto:\n\n'
+                            : 'Você tem *' + links.length + '* faturas em aberto:\n\n'))
     + blocos.join('\n\n---\n\n')
-    + '\n\nDigite *menu* para voltar ao inicio.';
+    + '\n\nDigite *menu* para voltar ao início.';
 
   if (links.length > 3) {
-    reply_text += '\n_Para ver todas, fale com um atendente (opcao 4)._';
+    reply_text += '\n_Para ver todas, fale com um atendente (opção 5)._';
   }
 }
 
@@ -520,12 +520,12 @@ let reply_text, next_step;
 
 if (protocolo) {
   reply_text = 'Chamado aberto com sucesso!\n\n*Protocolo:* ' + protocolo +
-    '\n\nNossa equipe vai analisar e entrar em contato. Guarde esse numero para acompanhar.\n\n' +
-    'Digite *menu* para voltar ao inicio.';
+    '\n\nNossa equipe vai analisar e entrar em contato. Guarde esse número para acompanhar.\n\n' +
+    'Digite *menu* para voltar ao início.';
   next_step = 'menu';
 } else {
   const msg = (resp && resp.msg) ? String(resp.msg) : '';
-  reply_text = 'Nao consegui abrir o chamado automaticamente' + (msg ? ' (' + msg + ')' : '') +
+  reply_text = 'Não consegui abrir o chamado automaticamente' + (msg ? ' (' + msg + ')' : '') +
     '. Vou te transferir para um atendente.';
   next_step = 'human_handoff';
 }
@@ -626,9 +626,9 @@ function extrairSinal(txt) {
 
 function classificar(dbm) {
   if (dbm === null) return null;
-  if (dbm >= -25) return { rotulo: 'Bom', nota: 'Seu sinal esta dentro do esperado.' };
-  if (dbm >= -27) return { rotulo: 'Atencao', nota: 'Sinal no limite. Pode oscilar em dias de chuva.' };
-  return { rotulo: 'Ruim', nota: 'Sinal abaixo do recomendado - precisa de visita tecnica.' };
+  if (dbm >= -25) return { rotulo: 'Bom', nota: 'Seu sinal está dentro do esperado.' };
+  if (dbm >= -27) return { rotulo: 'Atenção', nota: 'Sinal no limite. Pode oscilar em dias de chuva.' };
+  return { rotulo: 'Ruim', nota: 'Sinal abaixo do recomendado - precisa de visita técnica.' };
 }
 
 // Ordem de preferencia para o sinal:
@@ -661,28 +661,28 @@ const linhas = [];
 if (base.type || onu.modelo) linhas.push('*Equipamento:* ' + (onu.modelo || base.type));
 if (onu.cto) linhas.push('*Caixa (CTO):* ' + onu.cto + (onu.porta_cto ? ' / porta ' + onu.porta_cto : ''));
 if (dbm !== null) {
-  let l = '*Sinal optico:* ' + dbm.toFixed(2) + ' dBm  (' + cls.rotulo + ')';
-  if (md) l += '\n_medido em ' + md[3] + '/' + md[2] + ' as ' + md[4] + ':' + md[5] + '_';
+  let l = '*Sinal óptico:* ' + dbm.toFixed(2) + ' dBm  (' + cls.rotulo + ')';
+  if (md) l += '\n_medido em ' + md[3] + '/' + md[2] + ' às ' + md[4] + ':' + md[5] + '_';
   linhas.push(l);
 }
 
 let reply_text;
 if (!linhas.length) {
-  reply_text = 'Nao consegui ler os dados do seu equipamento agora. ' +
+  reply_text = 'Não consegui ler os dados do seu equipamento agora. ' +
     'Digite *3* para abrir um chamado ou *5* para falar com um atendente.';
 } else {
-  reply_text = 'Diagnostico da sua conexao:\n\n' + linhas.join('\n');
+  reply_text = 'Diagnóstico da sua conexão:\n\n' + linhas.join('\n');
   if (cls) reply_text += '\n\n' + cls.nota;
   if (dbm === null) {
-    reply_text += '\n\nNao consegui medir o sinal optico neste momento.';
+    reply_text += '\n\nNão consegui medir o sinal óptico neste momento.';
   } else if (horasAtras !== null && horasAtras > 48) {
-    reply_text += '\n\n_Obs.: essa e a ultima leitura registrada, nao uma medicao ' +
-      'de agora. Se o problema comecou depois disso, digite *3* para abrir um chamado._';
+    reply_text += '\n\n_Obs.: essa é a última leitura registrada, não uma medição ' +
+      'de agora. Se o problema começou depois disso, digite *3* para abrir um chamado._';
   }
   if (cls && cls.rotulo === 'Ruim') {
-    reply_text += '\n\nDigite *3* para abrir um chamado tecnico.';
+    reply_text += '\n\nDigite *3* para abrir um chamado técnico.';
   }
-  reply_text += '\n\nDigite *menu* para voltar ao inicio.';
+  reply_text += '\n\nDigite *menu* para voltar ao início.';
 }
 
 const session_patch = Object.assign({}, prev.session_patch, { reset: true });
@@ -707,8 +707,8 @@ return [{ json: Object.assign({}, prev, {
 JS_ONU_NAO_ENCONTRADA = r"""
 const prev = $input.first().json;
 return [{ json: Object.assign({}, prev, {
-  reply_text: 'Nao localizei o equipamento de fibra vinculado ao seu contrato. ' +
-    'Isso pode acontecer se sua conexao nao for por fibra optica.\n\n' +
+  reply_text: 'Não localizei o equipamento de fibra vinculado ao seu contrato. ' +
+    'Isso pode acontecer se sua conexão não for por fibra óptica.\n\n' +
     'Digite *3* para abrir um chamado ou *5* para falar com um atendente.',
   next_step: 'menu',
   session_patch: Object.assign({}, prev.session_patch, { reset: true }),
@@ -734,7 +734,7 @@ if (texto === null || texto === undefined || String(texto).trim() === '') {
   console.log('[bug] reply_text vazio | phone=' + (item.phone || '?') +
               ' step=' + (item.next_step || '?') + ' acao=' + (item.sgp_action || '?'));
   texto = 'Tive um problema para montar a resposta agora. Digite *menu* para ' +
-          'recomecar ou *5* para falar com um atendente.';
+          'recomeçar ou *5* para falar com um atendente.';
 }
 
 return [{

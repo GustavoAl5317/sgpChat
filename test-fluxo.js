@@ -158,7 +158,7 @@ check(posPrimeira !== -1 && posPrimeira < posSegunda, 'faturas ordenadas: mais a
 let s2 = { step: 'awaiting_cpf', data: JSON.stringify({ intent: 'financeiro' }) };
 t = turn(s2, CPF, PHONE_OK, RESP, SEM_FATURA);
 if (t.step === 'awaiting_contract_choice') t = turn(t.sessionRow, '1', PHONE_OK, RESP, SEM_FATURA);
-check(/nao tem nenhuma fatura em aberto/i.test(t.reply || ''), 'sem faturas -> mensagem apropriada');
+check(/não tem nenhuma fatura em aberto/i.test(t.reply || ''), 'sem faturas -> mensagem apropriada');
 
 // ========================== MODULO 3: Suporte ==========================
 console.log('\n=== Modulo 3: Suporte ===');
@@ -240,13 +240,13 @@ const OLTS = {
 for (const vendor of Object.keys(OLTS)) {
   const d = { lista: ONU_LISTA, detalhe: ONU_DETALHE, info: OLTS[vendor] };
   const td = ateIdentidade('4', PHONE_OK, d).t;
-  const temSinal = /Sinal optico/.test(td.reply || '');
+  const temSinal = /Sinal óptico/.test(td.reply || '');
   if (vendor === 'falha') {
-    check(!temSinal && /Nao consegui medir o sinal/.test(td.reply),
+    check(!temSinal && /Não consegui medir o sinal/.test(td.reply),
           'OLT fora do ar -> nao inventa sinal, avisa que nao mediu');
     check(/CTO-CENTRO-07/.test(td.reply), '  ...mas ainda entrega CTO e equipamento');
   } else if (vendor === 'ruim') {
-    check(/Ruim/.test(td.reply) && /visita tecnica/.test(td.reply),
+    check(/Ruim/.test(td.reply) && /visita técnica/.test(td.reply),
           'sinal -29.55 dBm -> Ruim + sugere chamado');
   } else {
     check(temSinal, 'OLT ' + vendor + ': sinal extraido');
@@ -265,12 +265,12 @@ check(tdiag.step === 'menu' && Object.keys(tdiag.data).length === 0, 'sessao lim
 // Sem ONU vinculada (exatamente o caso da base demo)
 const tsem = ateIdentidade('4', PHONE_OK,
   { lista: [], detalhe: ONU_DETALHE, info: OLTS.huawei }).t;
-check(/Nao localizei o equipamento/.test(tsem.reply || ''), 'sem ONU vinculada -> mensagem clara');
+check(/Não localizei o equipamento/.test(tsem.reply || ''), 'sem ONU vinculada -> mensagem clara');
 
 // Numeros soltos no texto da OLT nao podem virar leitura de sinal
 const tabs = ateIdentidade('4', PHONE_OK, { lista: ONU_LISTA, detalhe: ONU_DETALHE,
   info: { result: 'uptime 12345 dias  temperatura 47 C  serial 9988' } }).t;
-check(!/Sinal optico/.test(tabs.reply), 'numeros sem dBm nao viram leitura de sinal');
+check(!/Sinal óptico/.test(tabs.reply), 'numeros sem dBm nao viram leitura de sinal');
 
 // Diagnostico passa pela mesma validacao dos outros modulos
 const diagOk = { lista: ONU_LISTA, detalhe: ONU_DETALHE, info: OLTS.huawei };
@@ -311,21 +311,21 @@ check(/-15\.66 dBm/.test(tprio.reply) && !/-19\.45/.test(tprio.reply),
 // Leitura antiga nao pode ser apresentada como se fosse de agora
 const tvelho = ateIdentidade('4', PHONE_OK,
   { lista: onuReal('-15.656', '2026-01-02 03:04:05'), detalhe: SEM_DETALHE, info: null }).t;
-check(/ultima leitura registrada/.test(tvelho.reply), 'leitura antiga vem com ressalva');
-check(/02\/01 as 03:04/.test(tvelho.reply), 'mostra quando a leitura foi feita');
+check(/última leitura registrada/.test(tvelho.reply), 'leitura antiga vem com ressalva');
+check(/02\/01 às 03:04/.test(tvelho.reply), 'mostra quando a leitura foi feita');
 
 // info_rx fora da faixa fisica (campo vazio, zero, lixo) nao pode virar sinal
 [['', 'vazio'], ['0', 'zero'], ['99', 'positivo absurdo'], ['-99', 'negativo absurdo']].forEach(
   function (par) {
     const t = ateIdentidade('4', PHONE_OK,
       { lista: onuReal(par[0], AGORA), detalhe: SEM_DETALHE, info: null }).t;
-    check(!/Sinal optico/.test(t.reply), 'info_rx ' + par[1] + ' nao vira leitura de sinal');
+    check(!/Sinal óptico/.test(t.reply), 'info_rx ' + par[1] + ' nao vira leitura de sinal');
   });
 
 // Tx e positivo: nunca pode ser confundido com o sinal recebido
 const ttx = ateIdentidade('4', PHONE_OK,
   { lista: onuReal('2.326', AGORA), detalhe: SEM_DETALHE, info: null }).t;
-check(!/Sinal optico/.test(ttx.reply), 'valor de Tx nao e exibido como sinal recebido');
+check(!/Sinal óptico/.test(ttx.reply), 'valor de Tx nao e exibido como sinal recebido');
 
 console.log('\n----------------------------------------');
 console.log(ok + ' passaram, ' + fail + ' falharam');
