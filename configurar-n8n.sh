@@ -90,9 +90,26 @@ docker compose exec -T n8n rm -f /tmp/cred.json /tmp/wf.json 2>/dev/null || true
 WF_ID="$WF_UUID"
 log "Workflow id: $WF_ID"
 
+# A importacao entra com active=false, entao reativar nao e opcional: se falhar,
+# um bot que estava atendendo para de responder e ninguem percebe ate um cliente
+# reclamar. O CLI do n8n ja renomeou esse comando uma vez (update:workflow ->
+# publish:workflow), por isso tentamos os dois e, se nenhum existir na versao
+# instalada, ligamos direto na tabela - o restart logo abaixo faz o n8n
+# reconhecer. Falhar aqui e erro fatal, nao aviso.
 log "Ativando..."
-docker compose exec -T -u node n8n n8n update:workflow --id="$WF_ID" --active=true \
-  || warn "o comando de ativacao falhou - ative pelo toggle na interface"
+ativou=0
+for cmd in "publish:workflow" "update:workflow"; do
+  if docker compose exec -T -u node n8n n8n "$cmd" --id="$WF_ID" --active=true >/dev/null 2>&1; then
+    ativou=1; echo "    via CLI ($cmd)"; break
+  fi
+done
+if [[ "$ativou" -eq 0 ]]; then
+  warn "o CLI nao aceitou nenhum comando de ativacao - ligando pelo banco"
+  docker compose exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -q \
+    -c "UPDATE workflow_entity SET active = true WHERE id = '${WF_ID}';" >/dev/null \
+    || die "nao consegui ativar o workflow nem pelo CLI nem pelo banco"
+  echo "    via SQL"
+fi
 
 # As rotas ficam materializadas em webhook_entity. Se uma importacao anterior
 # gravou um caminho errado, ele sobrevive ao restart - entao limpamos as rotas
