@@ -1,13 +1,17 @@
-# GenieACS para o PILOTO de troca de Wi-Fi - UMA ONU, de funcionario.
+# GenieACS - producao, gerencia o roteador de TODOS os assinantes da RCNet.
 #
-# Nao e implantacao de producao. Producao gerencia o roteador de todos os
-# assinantes: precisa de TLS no CWMP, credencial forte, backup do Mongo e um
-# dono definido. Aqui o objetivo e so provar que o caminho
-# bot -> SGP -> GenieACS -> ONU funciona, com um equipamento que alguem da
-# equipe controla e pode desligar.
+# Roda na mesma VM do stack do bot (botsgp-*), mas em compose e rede Docker
+# separados de proposito: nenhum container daqui enxerga os do bot, e
+# vice-versa. Se um dos dois travar ou for comprometido, o outro nao cai
+# junto so por estar na mesma maquina - mas ambos SAO a mesma maquina, entao
+# um comprometimento do host (nao do container) afeta os dois. Isso e o
+# principal motivo para manter o SO atualizado e o SSH bem trancado nesta VM
+# a partir de agora - ela passou a ter acesso administrativo ao roteador de
+# cada cliente, nao so ao atendimento.
 #
-# Sobe separado do stack do bot de proposito: se algo aqui travar, o
-# atendimento continua de pe.
+# Comece pelo README.md desta pasta: ele tem o passo a passo, incluindo TLS
+# real (Let's Encrypt) e o script de backup do Mongo, que sao obrigatorios
+# aqui - isto nao e descartavel como um piloto seria.
 #
 #   cd genieacs && cp .env.example .env && nano .env && docker compose up -d
 #
