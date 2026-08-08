@@ -92,8 +92,18 @@ function normDate(v) {
   return s.replace(/\D/g, '');
 }
 
+// Trocar Wi-Fi exige um Gerenciador de CPE (ACS/TR-069) cadastrado no SGP. Sem
+// ele o SGP responde "O Servico de internet nao possui Gerenciador de CPE
+// configurado" em TODA chamada, e a opcao vira uma promessa que sempre falha:
+// o cliente escolhe, prova quem e, digita nome e senha, e no fim cai na fila do
+// atendimento humano com um problema que atendente nenhum resolve.
+// Enquanto o provedor nao tiver ACS, WIFI_HABILITADO=false tira a opcao do
+// menu. Melhor nao oferecer do que oferecer e frustrar no ultimo passo.
+const WIFI_ON = String($env.WIFI_HABILITADO === undefined ? 'true' : $env.WIFI_HABILITADO)
+                  .trim().toLowerCase() !== 'false';
+
 const MENU = 'Olá! Sou o atendimento automático.\n\n' +
-  '*1* - Alterar nome/senha do Wi-Fi\n' +
+  (WIFI_ON ? '*1* - Alterar nome/senha do Wi-Fi\n' : '') +
   '*2* - 2ª via de boleto\n' +
   '*3* - Abrir chamado de suporte\n' +
   '*4* - Diagnóstico da minha conexão\n' +
@@ -214,7 +224,15 @@ if (/^(menu|sair|voltar|inicio|0)$/i.test(text)) {
 
 switch (step) {
   case 'menu': {
-    if (['1', '2', '3', '4'].includes(text)) {
+    // Os numeros das outras opcoes nao mudam quando o Wi-Fi sai: cliente
+    // costuma responder olhando uma mensagem antiga da conversa, e renumerar
+    // faria quem pediu boleto cair no diagnostico.
+    if (text === '1' && !WIFI_ON) {
+      reply_text = 'A troca de nome e senha do Wi-Fi pelo atendimento ' +
+        'automático ainda não está disponível.\n\n' +
+        'Digite *5* para falar com um atendente, que faz isso para você.';
+      next_step = 'menu';
+    } else if ((WIFI_ON ? ['1', '2', '3', '4'] : ['2', '3', '4']).includes(text)) {
       const intents = { '1': 'wifi', '2': 'financeiro', '3': 'suporte', '4': 'diagnostico' };
       const it = intents[text];
       if (identidadeFresca(session)) {

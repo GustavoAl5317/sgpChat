@@ -8,11 +8,16 @@ const wf = JSON.parse(fs.readFileSync('n8n/workflow-wifi-selfservice.json', 'utf
 const code = {};
 wf.nodes.forEach(n => { if (n.parameters && n.parameters.jsCode) code[n.name] = n.parameters.jsCode; });
 
+// Os Code nodes leem configuracao de $env (o compose libera com
+// N8N_BLOCK_ENV_ACCESS_IN_NODE=false). Aqui vale o default de producao, e cada
+// teste sobrescreve o que precisa.
+let ENV = {};
+
 function run(nodeName, inputs, refs) {
-  const fn = new Function('$input', '$', code[nodeName]);
+  const fn = new Function('$input', '$', '$env', code[nodeName]);
   const $input = { first: () => ({ json: inputs[0] }), all: () => inputs.map(j => ({ json: j })) };
   const $ = (r) => ({ first: () => ({ json: refs[r] }) });
-  const out = fn($input, $);
+  const out = fn($input, $, ENV);
   return out.length ? out[0].json : null;
 }
 
@@ -443,6 +448,33 @@ check(/02\/01 às 03:04/.test(tvelho.reply), 'mostra quando a leitura foi feita'
 const ttx = ateIdentidade('4', PHONE_OK,
   { lista: onuReal('2.326', AGORA), detalhe: SEM_DETALHE, info: null }).t;
 check(!/Sinal óptico/.test(ttx.reply), 'valor de Tx nao e exibido como sinal recebido');
+
+// ============ Wi-Fi desligado (provedor sem Gerenciador de CPE) ============
+// Sem ACS cadastrado no SGP a opcao 1 falha SEMPRE, no ultimo passo, depois de
+// o cliente ja ter provado quem e e escolhido nome e senha. Melhor nao oferecer.
+console.log('\n=== Wi-Fi desligado por configuracao ===');
+ENV = { WIFI_HABILITADO: 'false' };
+
+let td = turn(null, 'oi', PHONE_OK);
+check(!/Alterar nome\/senha do Wi-Fi/.test(td.reply), 'opcao de Wi-Fi sai do menu');
+check(/2ª via de boleto/.test(td.reply) && /Diagnóstico/.test(td.reply),
+      'as outras opcoes continuam no menu');
+check(/\*2\*/.test(td.reply) && /\*5\*/.test(td.reply),
+      'numeros das outras opcoes nao mudam');
+
+// Quem responde olhando uma mensagem antiga ainda digita 1. Nao pode receber
+// o menu de novo sem explicacao, nem entrar num fluxo que vai falhar.
+td = turn(null, '1', PHONE_OK);
+check(td.step === 'menu' && !/CPF/i.test(td.reply), 'digitar 1 nao inicia o fluxo de Wi-Fi');
+check(/atendente/i.test(td.reply), 'digitar 1 explica e aponta para o atendente');
+
+// As outras opcoes seguem funcionando normalmente
+td = turn(null, '2', PHONE_OK);
+check(td.step === 'awaiting_cpf', 'boleto continua funcionando com o Wi-Fi desligado');
+
+ENV = {};
+td = turn(null, 'oi', PHONE_OK);
+check(/Alterar nome\/senha do Wi-Fi/.test(td.reply), 'sem a variavel, o padrao e ligado');
 
 console.log('\n----------------------------------------');
 console.log(ok + ' passaram, ' + fail + ' falharam');
