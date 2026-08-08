@@ -230,7 +230,10 @@ switch (step) {
       reply_text = 'O nome da rede tem caracteres inválidos. Envie novamente:';
       next_step = 'awaiting_ssid';
     } else {
-      reply_text = 'Nome definido como "' + text + '".\n\nAgora envie a nova senha do Wi-Fi (8 a 63 caracteres):';
+      reply_text = 'Nome definido como "' + text + '".\n\n' +
+        'Agora envie a nova senha do Wi-Fi, de 8 a 63 caracteres, sem acentos.\n' +
+        'Anote onde conseguir consultar: todo aparelho da casa vai precisar dela ' +
+        'para voltar a conectar.';
       next_step = 'awaiting_password';
       session_patch = { ssid_new: text };
     }
@@ -246,8 +249,32 @@ switch (step) {
       reply_text = 'A senha só pode ter letras, números e símbolos comuns (sem acentos/emoji). Envie novamente:';
       next_step = 'awaiting_password';
     } else {
+      // Nao aplica ainda: a alteracao derruba todo mundo da casa e nao ha como
+      // desfazer pelo bot. Mostra o que vai ser aplicado e espera o "sim".
+      reply_text = 'Confira antes de aplicar:\n\n' +
+        '*Nome da rede:* ' + session.ssid_new + '\n' +
+        '*Senha:* ' + text + '\n\n' +
+        'Ao confirmar, todos os aparelhos conectados (celulares, TV, câmeras) vão ' +
+        'desconectar e precisarão ser reconectados com a senha nova.\n\n' +
+        'Digite *1* para confirmar ou *2* para cancelar.';
+      next_step = 'awaiting_wifi_confirm';
+      session_patch = { senha_new: text };
+    }
+    break;
+  }
+
+  case 'awaiting_wifi_confirm': {
+    if (text === '1') {
       sgp_action = 'definir_wifi';
-      sgp_payload = { contrato: session.contrato, ssid: session.ssid_new, senha: text };
+      sgp_payload = { contrato: session.contrato, ssid: session.ssid_new, senha: session.senha_new };
+    } else if (text === '2') {
+      reply_text = 'Tudo bem, não alterei nada. Sua rede continua com o nome e a ' +
+        'senha de antes.\n\nDigite *menu* para voltar ao início.';
+      next_step = 'menu';
+      session_patch = { reset: true };
+    } else {
+      reply_text = 'Não entendi. Digite *1* para aplicar a alteração ou *2* para cancelar.';
+      next_step = 'awaiting_wifi_confirm';
     }
     break;
   }
@@ -779,10 +806,22 @@ nodes = [
 
     code_node("code-extract", "Extract Inbound", JS_EXTRACT, [200, 0]),
 
+    # A sessao carrega CPF e, durante a troca de Wi-Fi, a senha nova que o
+    # cliente digitou. Expirar isso nao pode depender de um cron que alguem
+    # lembrou de agendar: a propria consulta descarta o que passou de 30 min e
+    # varre as sessoes abandonadas de todo mundo no mesmo golpe. Quem sumiu no
+    # meio do atendimento recomeca do menu - que e o desfecho certo de qualquer
+    # forma, ninguem retoma um fluxo meia hora depois.
     {"parameters": {"operation": "executeQuery",
-                    "query": ("SELECT step, data FROM wa_sessions WHERE phone = $1\n"
+                    "query": ("WITH expiradas AS (\n"
+                              "    DELETE FROM wa_sessions WHERE updated_at < now() - interval '30 minutes'\n"
+                              ")\n"
+                              "SELECT step, data FROM wa_sessions\n"
+                              " WHERE phone = $1 AND updated_at >= now() - interval '30 minutes'\n"
                               "UNION ALL\n"
-                              "SELECT NULL, NULL WHERE NOT EXISTS (SELECT 1 FROM wa_sessions WHERE phone = $1)"),
+                              "SELECT NULL, NULL WHERE NOT EXISTS (\n"
+                              "    SELECT 1 FROM wa_sessions\n"
+                              "     WHERE phone = $1 AND updated_at >= now() - interval '30 minutes')"),
                     "options": {"queryReplacement": "={{ [$json.phone] }}"}},
      "id": "pg-get", "name": "Get Session", "type": "n8n-nodes-base.postgres",
      # O UNION ALL garante que o node devolva 1 item mesmo se o cliente for novo,

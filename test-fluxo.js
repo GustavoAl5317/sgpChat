@@ -125,14 +125,35 @@ t = turn(s, 'Wifi da Familia', PHONE_OK); s = t.sessionRow;
 check(t.step === 'awaiting_password', 'SSID aceito -> pede senha');
 t = turn(s, 'abc', PHONE_OK); s = t.sessionRow;
 check(t.step === 'awaiting_password', 'senha curta rejeitada');
-t = turn(s, 'MinhaSenha123', PHONE_OK, { msg: 'Alteracoes realizadas com sucesso.', success: true });
-check(t.step === 'menu', 'sucesso -> volta ao menu');
+
+// A alteracao derruba a casa inteira e nao da para desfazer pelo bot, entao a
+// senha valida leva a uma confirmacao - nao direto ao SGP.
+t = turn(s, 'MinhaSenha123', PHONE_OK); s = t.sessionRow;
+check(t.step === 'awaiting_wifi_confirm', 'senha valida -> pede confirmacao, nao aplica');
+check(/Wifi da Familia/.test(t.reply) && /MinhaSenha123/.test(t.reply),
+      'confirmacao repete nome e senha para o cliente conferir');
+check(/desconectar/.test(t.reply), 'avisa que os aparelhos vao cair ANTES de aplicar');
+
+// Resposta fora de 1/2 nao pode ser lida como "sim"
+let tconf = turn(s, 'ok', PHONE_OK, { msg: 'nao deveria ter chamado', success: true });
+check(tconf.step === 'awaiting_wifi_confirm' && !tconf.audit,
+      'resposta ambigua nao aplica a alteracao');
+
+// Cancelar nao chama o SGP e limpa a senha guardada na sessao
+tconf = turn(s, '2', PHONE_OK, { msg: 'nao deveria ter chamado', success: true });
+check(tconf.step === 'menu' && !tconf.audit, 'cancelar nao aplica nada');
+check(Object.keys(tconf.data).length === 0, 'cancelar apaga a senha da sessao');
+
+t = turn(s, '1', PHONE_OK, { msg: 'Alteracoes realizadas com sucesso.', success: true });
+check(t.step === 'menu', 'confirmado + sucesso -> volta ao menu');
 check(Object.keys(t.data).length === 0, 'sessao limpa apos concluir');
 check(t.audit && t.audit.tipo === 'wifi', 'auditoria tipo=wifi');
+check(!JSON.stringify(t.audit).includes('MinhaSenha123'), 'senha do cliente fora da auditoria');
 
-// roteador sem ACS (resposta real da demo)
-t = turn({ step: 'awaiting_password', data: JSON.stringify({ contrato: 566, ssid_new: 'X' }) },
-         'SenhaValida123', PHONE_OK,
+// roteador sem ACS (resposta real da demo, e do contrato real da RCNet)
+t = turn({ step: 'awaiting_wifi_confirm',
+           data: JSON.stringify({ contrato: 566, ssid_new: 'X', senha_new: 'SenhaValida123' }) },
+         '1', PHONE_OK,
          { msg: 'O Servico de internet nao possui Gerenciador de CPE configurado.', success: false });
 check(t.step === 'human_handoff', 'roteador sem CPE -> atendente');
 
