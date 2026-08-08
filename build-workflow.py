@@ -115,7 +115,8 @@ function aposIdentidade(intent) {
     return { sgp_action: 'diagnostico', next_step: 'menu', reply_text: null };
   }
   return { sgp_action: 'none', next_step: 'awaiting_ssid',
-           reply_text: 'Qual será o novo nome (SSID) da sua rede Wi-Fi?' };
+           reply_text: 'Qual será o novo nome da sua rede Wi-Fi?\n' +
+                       'É o nome que aparece quando você procura redes Wi-Fi no celular.' };
 }
 
 let reply_text = null;
@@ -309,7 +310,8 @@ function aposIdentidade(it, contrato, mac) {
              reply_text: 'Descreva o problema que você está enfrentando (em uma mensagem):' };
   }
   return { sgp_action: 'none', next_step: 'awaiting_ssid', sgp_payload: {},
-           reply_text: 'Qual será o novo nome (SSID) da sua rede Wi-Fi?' };
+           reply_text: 'Qual será o novo nome da sua rede Wi-Fi?\n' +
+                       'É o nome que aparece quando você procura redes Wi-Fi no celular.' };
 }
 
 // Resposta do SGP: { msg, contratos: [ ... ] }
