@@ -62,8 +62,12 @@ if not cs:
     sys.stderr.write('    (nenhum contrato para esse CPF)\n')
 for c in cs:
     st = c.get('contratoStatus')
-    sys.stderr.write('    contrato %-8s status=%-2s %s\n' % (
-        c.get('contratoId'), st, c.get('contratoStatusDisplay') or ''))
+    # O nome atual da rede e o que permite a sondagem REAL: reenviar o mesmo
+    # nome passa pela checagem de CPE sem mudar nada para o cliente.
+    ssid = c.get('servico_wifi_ssid') or ''
+    sys.stderr.write('    contrato %-8s status=%-2s %-12s wifi_ssid=%s\n' % (
+        c.get('contratoId'), st, c.get('contratoStatusDisplay') or '',
+        ssid or '(o SGP nao devolve esse campo)'))
     if st == 1:
         print(c.get('contratoId'))
 ")
@@ -118,12 +122,33 @@ done
 
 cat <<EOF
 Como ler:
-  - TODOS com "Gerenciador de CPE"  -> o ACS nao esta configurado na base.
-    O modulo Wi-Fi nao funciona para ninguem. Ou a RCNet configura o
-    Gerenciador de CPE no SGP, ou a opcao 1 sai do menu ate la.
-  - ALGUNS passam                   -> e por contrato: so os equipamentos
-    provisionados no ACS aceitam. O bot ja manda esses casos para atendente.
-  - Todos com outro erro            -> me manda a saida, e outra coisa.
+
+  "E necessario enviar um ou mais dos seguintes parametros"
+      A sondagem vazia NAO responde nada. O SGP valida os parametros ANTES de
+      checar o Gerenciador de CPE, entao esta chamada nunca chega la. Era falha
+      do teste, nao do contrato.
+
+      Para chegar na checagem de CPE e preciso uma escrita de verdade. A de
+      menor risco e reenviar o nome que a rede JA TEM - passa por todas as
+      validacoes e deixa o cliente exatamente como estava:
+
+          bash testar-wifi.sh --aplicar <contrato> "<nome-atual-da-rede>"
+
+      O nome atual sai no wifi_ssid listado acima. Se vier vazio, pegue no SGP
+      (contrato -> Servico de Internet) antes de tentar.
+
+  "Gerenciador de CPE"
+      Esse contrato nao tem CPE configurado no SGP. Repita em contratos de
+      outras pessoas: se TODOS derem isso, o ACS nao esta configurado na base e
+      o modulo Wi-Fi nao funciona para ninguem - a opcao 1 deveria sair do menu
+      ate a RCNet configurar.
+
+  "success": true
+      O SGP aceitou e o contrato TEM CPE. Confirme no celular que a rede
+      continua com o mesmo nome (era para nada ter mudado).
+
+Observacao: a lista de parametros aceitos inclui wifi_status e wifi_status_5,
+que LIGAM E DESLIGAM o radio. O bot nunca envia esses campos - so nome e senha.
 
 Pergunta a fazer para a RCNet, que economiza um dia de tentativa e erro:
   "O Gerenciador de CPE esta configurado no SGP? Para quais contratos?"
