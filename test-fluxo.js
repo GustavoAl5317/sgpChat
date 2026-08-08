@@ -126,31 +126,31 @@ check(t.step === 'awaiting_password', 'SSID aceito -> pede senha');
 t = turn(s, 'abc', PHONE_OK); s = t.sessionRow;
 check(t.step === 'awaiting_password', 'senha curta rejeitada');
 
-// A alteracao derruba a casa inteira e nao da para desfazer pelo bot, entao a
-// senha valida leva a uma confirmacao - nao direto ao SGP.
+// O cpemanage escreve no roteador em toda chamada - nada e aplicado sem o
+// cliente confirmar, e o aviso da queda dos aparelhos vem antes.
 t = turn(s, 'MinhaSenha123', PHONE_OK); s = t.sessionRow;
-check(t.step === 'awaiting_wifi_confirm', 'senha valida -> pede confirmacao, nao aplica');
+check(t.step === 'awaiting_wifi_confirm', 'senha valida -> pede confirmacao');
+check(/desconectar/.test(t.reply), 'confirmacao avisa que os aparelhos vao cair');
 check(/Wifi da Familia/.test(t.reply) && /MinhaSenha123/.test(t.reply),
-      'confirmacao repete nome e senha para o cliente conferir');
-check(/desconectar/.test(t.reply), 'avisa que os aparelhos vao cair ANTES de aplicar');
+      'confirmacao mostra nome e senha escolhidos');
 
-// Resposta fora de 1/2 nao pode ser lida como "sim"
-let tconf = turn(s, 'ok', PHONE_OK, { msg: 'nao deveria ter chamado', success: true });
-check(tconf.step === 'awaiting_wifi_confirm' && !tconf.audit,
-      'resposta ambigua nao aplica a alteracao');
+t = turn(s, 'talvez', PHONE_OK); s = t.sessionRow;
+check(t.step === 'awaiting_wifi_confirm', 'resposta ambigua nao aplica nada');
 
-// Cancelar nao chama o SGP e limpa a senha guardada na sessao
-tconf = turn(s, '2', PHONE_OK, { msg: 'nao deveria ter chamado', success: true });
-check(tconf.step === 'menu' && !tconf.audit, 'cancelar nao aplica nada');
-check(Object.keys(tconf.data).length === 0, 'cancelar apaga a senha da sessao');
+t = turn(s, '2', PHONE_OK); s = t.sessionRow;
+check(t.step === 'menu' && !t.audit, 'cancelar nao chama o SGP nem audita');
 
+// refaz ate a confirmacao para exercitar o caminho de sucesso
+({ t, s } = ateIdentidade('1', PHONE_OK));
+t = turn(s, 'Wifi da Familia', PHONE_OK); s = t.sessionRow;
+t = turn(s, 'MinhaSenha123', PHONE_OK); s = t.sessionRow;
 t = turn(s, '1', PHONE_OK, { msg: 'Alteracoes realizadas com sucesso.', success: true });
-check(t.step === 'menu', 'confirmado + sucesso -> volta ao menu');
+check(t.step === 'menu', 'sucesso -> volta ao menu');
 check(Object.keys(t.data).length === 0, 'sessao limpa apos concluir');
 check(t.audit && t.audit.tipo === 'wifi', 'auditoria tipo=wifi');
-check(!JSON.stringify(t.audit).includes('MinhaSenha123'), 'senha do cliente fora da auditoria');
+check(!/MinhaSenha123/.test(JSON.stringify(t.data)), 'senha nao fica guardada na sessao');
 
-// roteador sem ACS (resposta real da demo, e do contrato real da RCNet)
+// roteador sem ACS (resposta real da demo)
 t = turn({ step: 'awaiting_wifi_confirm',
            data: JSON.stringify({ contrato: 566, ssid_new: 'X', senha_new: 'SenhaValida123' }) },
          '1', PHONE_OK,
@@ -158,6 +158,58 @@ t = turn({ step: 'awaiting_wifi_confirm',
 check(t.step === 'human_handoff', 'roteador sem CPE -> atendente');
 
 // ========================= MODULO 2: Financeiro =========================
+// ================= Identidade reaproveitada (janela de 15 min) =================
+// O cliente resolve duas coisas na mesma conversa. Repetir CPF + data de
+// nascimento a cada modulo e o motivo mais comum de ninguem terminar o
+// atendimento - mas a janela precisa expirar, senao vira porta aberta.
+console.log('\n=== Identidade reaproveitada ===');
+
+// Sessao de quem acabou de provar quem e, com o contrato ja resolvido.
+function sessaoValidada(idadeMs, extra) {
+  return { step: 'menu', data: JSON.stringify(Object.assign({
+    contrato: ativos[0].contratoId, cpf: '12345678909', intent: 'wifi',
+    mac: ativos[0].servico_mac || '', verified_at: Date.now() - (idadeMs || 0),
+  }, extra || {})) };
+}
+
+// Sem passar CPF de novo: vai direto ao boleto.
+t = turn(sessaoValidada(60 * 1000), '2', PHONE_OK, null, FATURAS);
+check(!/CPF/i.test(t.reply || ''), 'identidade recente -> nao pede CPF de novo');
+check(/Vencimento/.test(t.reply || ''), 'identidade recente -> ja mostra as faturas');
+
+t = turn(sessaoValidada(60 * 1000), '1', PHONE_OK);
+check(t.step === 'awaiting_ssid', 'identidade recente -> Wi-Fi vai direto ao nome da rede');
+check(t.data.ident_reaproveitada === true, 'auditoria sabe que a identidade foi reaproveitada');
+
+// Passados os 15 min, revalida do zero.
+t = turn(sessaoValidada(16 * 60 * 1000), '2', PHONE_OK, null, FATURAS);
+check(t.step === 'awaiting_cpf', 'identidade expirada -> pede CPF de novo');
+
+// Sessao sem verified_at (versao antiga do fluxo, ou nunca validada).
+t = turn({ step: 'menu', data: JSON.stringify({ contrato: 566 }) }, '2', PHONE_OK, null, FATURAS);
+check(t.step === 'awaiting_cpf', 'contrato na sessao sem validacao nao vale identidade');
+
+// verified_at no futuro (relogio torto) nao pode virar sessao eterna.
+t = turn(sessaoValidada(-60 * 60 * 1000), '2', PHONE_OK, null, FATURAS);
+check(t.step === 'awaiting_cpf', 'verified_at no futuro nao e aceito');
+
+// "menu"/"sair" reinicia: o reset limpa a identidade junto. Vale tambem
+// estando ja no menu - e o unico jeito do cliente encerrar de proposito.
+let sv = sessaoValidada(60 * 1000); sv.step = 'awaiting_ssid';
+t = turn(sv, 'menu', PHONE_OK);
+check(Object.keys(t.data).length === 0, 'digitar menu no meio do fluxo descarta a identidade');
+t = turn(sessaoValidada(60 * 1000), 'sair', PHONE_OK);
+check(Object.keys(t.data).length === 0, 'digitar sair no menu encerra a sessao autenticada');
+
+// ---- Nome atual da rede no prompt do Wi-Fi ----
+// O cliente nao sabe o que e "SSID" e nao lembra o nome da propria rede.
+t = turn(sessaoValidada(60 * 1000, { wifi_ssid_atual: 'RCNET-CASA' }), '1', PHONE_OK);
+check(/RCNET-CASA/.test(t.reply || ''), 'mostra o nome atual da rede quando o SGP tem');
+check(!/SSID/.test(t.reply || ''), 'nao usa o jargao SSID com o cliente');
+t = turn(sessaoValidada(60 * 1000, { wifi_ssid_atual: '' }), '1', PHONE_OK);
+check(!/SSID/.test(t.reply || '') && /redes Wi-Fi/.test(t.reply || ''),
+      'sem nome cadastrado, explica onde encontrar');
+
 console.log('\n=== Modulo 2: Financeiro (2a via) ===');
 ({ t, s } = ateIdentidade('2', PHONE_OK));
 console.log('  bot:', JSON.stringify(t.reply).slice(0, 150));

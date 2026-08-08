@@ -100,23 +100,52 @@ const MENU = 'Olá! Sou o atendimento automático.\n\n' +
   '*5* - Falar com atendente\n\n' +
   'Digite o número da opção desejada.';
 
+// Identidade validada vale por uma janela curta. O cliente costuma resolver
+// duas coisas na mesma conversa (ver o boleto e depois abrir um chamado), e
+// repetir CPF + data de nascimento a cada modulo e atrito puro - ninguem
+// termina o atendimento. Passada a janela, revalida do zero.
+// A janela e curta de proposito: o vinculo que estamos reaproveitando e
+// "este numero de WhatsApp provou ser o dono deste contrato", e ele deixa de
+// valer se o aparelho trocar de maos.
+const IDENT_TTL_MS = 15 * 60 * 1000;
+function identidadeFresca(s) {
+  if (!s || !s.contrato || !s.verified_at) return false;
+  const idade = Date.now() - Number(s.verified_at);
+  return idade >= 0 && idade < IDENT_TTL_MS;
+}
+
+// "SSID" e jargao: o cliente nao sabe o que e, e normalmente nao lembra como
+// a rede dele se chama hoje. Quando o SGP devolve o nome atual, mostramos -
+// serve de ancora ("e essa mesma rede") e de exemplo do que responder.
+function promptSsid(atualRaw) {
+  const atual = String(atualRaw || '').trim();
+  if (atual) {
+    return 'Sua rede Wi-Fi hoje se chama *' + atual + '*.\n\n' +
+           'Qual será o novo nome dela?\n' +
+           '_É o nome que aparece na lista de redes Wi-Fi do celular._';
+  }
+  return 'Qual será o novo nome da sua rede Wi-Fi?\n' +
+         '_É o nome que aparece quando você procura redes Wi-Fi no celular._';
+}
+
 // Depois que a identidade e confirmada, para onde vai depende do que o
 // cliente escolheu no menu. Centralizado aqui para os tres modulos usarem
 // exatamente a mesma validacao.
-function aposIdentidade(intent) {
+function aposIdentidade(intent, s) {
   if (intent === 'financeiro') {
-    return { sgp_action: 'segunda_via', next_step: 'menu', reply_text: null };
+    return { sgp_action: 'segunda_via', next_step: 'menu', reply_text: null,
+             sgp_payload: { contrato: s.contrato } };
   }
   if (intent === 'suporte') {
-    return { sgp_action: 'none', next_step: 'awaiting_support_desc',
+    return { sgp_action: 'none', next_step: 'awaiting_support_desc', sgp_payload: {},
              reply_text: 'Descreva o problema que você está enfrentando (em uma mensagem):' };
   }
   if (intent === 'diagnostico') {
-    return { sgp_action: 'diagnostico', next_step: 'menu', reply_text: null };
+    return { sgp_action: 'diagnostico', next_step: 'menu', reply_text: null,
+             sgp_payload: { contrato: s.contrato, mac: s.mac || '' } };
   }
-  return { sgp_action: 'none', next_step: 'awaiting_ssid',
-           reply_text: 'Qual será o novo nome da sua rede Wi-Fi?\n' +
-                       'É o nome que aparece quando você procura redes Wi-Fi no celular.' };
+  return { sgp_action: 'none', next_step: 'awaiting_ssid', sgp_payload: {},
+           reply_text: promptSsid(s.wifi_ssid_atual) };
 }
 
 let reply_text = null;
@@ -125,8 +154,12 @@ let session_patch = {};
 let sgp_action = 'none';
 let sgp_payload = {};
 
-// "menu" digitado a qualquer momento reinicia o atendimento
-if (/^(menu|sair|voltar|inicio|0)$/i.test(text) && step !== 'menu') {
+// "menu" digitado a qualquer momento reinicia o atendimento - inclusive
+// estando ja no menu. Parece redundante (a resposta e a mesma), mas nao e:
+// desde que a identidade validada sobrevive entre modulos, "sair" precisa
+// ser um jeito explicito de encerrar. Sem isso, quem digita "sair" achando
+// que fechou o atendimento deixa a sessao autenticada aberta na janela.
+if (/^(menu|sair|voltar|inicio|0)$/i.test(text)) {
   return [{ json: { phone, text, step, session,
     reply_text: MENU, next_step: 'menu',
     session_patch: { reset: true }, sgp_action: 'none', sgp_payload: {} } }];
@@ -136,9 +169,23 @@ switch (step) {
   case 'menu': {
     if (['1', '2', '3', '4'].includes(text)) {
       const intents = { '1': 'wifi', '2': 'financeiro', '3': 'suporte', '4': 'diagnostico' };
-      reply_text = 'Para sua segurança, informe o CPF/CNPJ do titular da conta (somente números):';
-      next_step = 'awaiting_cpf';
-      session_patch = { attempts: 0, intent: intents[text] };
+      const it = intents[text];
+      if (identidadeFresca(session)) {
+        // Ja provou quem e ha poucos minutos - vai direto ao que pediu.
+        const d = aposIdentidade(it, session);
+        reply_text = d.reply_text;
+        next_step = d.next_step;
+        sgp_action = d.sgp_action;
+        sgp_payload = d.sgp_payload;
+        // ident_reaproveitada vai para a auditoria: se um dia for preciso
+        // investigar uma alteracao, tem que dar para saber que ela nao pediu
+        // CPF de novo e qual validacao anterior a autorizou.
+        session_patch = { attempts: 0, intent: it, ident_reaproveitada: true };
+      } else {
+        reply_text = 'Para sua segurança, informe o CPF/CNPJ do titular da conta (somente números):';
+        next_step = 'awaiting_cpf';
+        session_patch = { attempts: 0, intent: it, ident_reaproveitada: undefined };
+      }
     } else if (text === '5') {
       reply_text = 'Certo! Vou te transferir para um atendente humano. Aguarde um momento.';
       next_step = 'human_handoff';
@@ -183,12 +230,15 @@ switch (step) {
         next_step = 'awaiting_second_factor';
         session_patch.attempts = 0;
       } else {
-        const d = aposIdentidade(session.intent);
+        // O contrato escolhido ainda nao esta em session (o upsert vem depois),
+        // entao decide sobre a sessao ja com o patch aplicado.
+        const s = Object.assign({}, session, session_patch);
+        const d = aposIdentidade(session.intent, s);
         reply_text = d.reply_text;
         next_step = d.next_step;
         sgp_action = d.sgp_action;
-        if (d.sgp_action === 'segunda_via') sgp_payload = { contrato: esc.contrato };
-        if (d.sgp_action === 'diagnostico') sgp_payload = { contrato: esc.contrato, mac: session.mac || '' };
+        sgp_payload = d.sgp_payload;
+        session_patch.verified_at = Date.now();
       }
     }
     break;
@@ -198,13 +248,13 @@ switch (step) {
     const alvo = normDate(session.second_factor_target);
     const resp = normDate(text);
     if (alvo && resp && alvo === resp) {
-      const d = aposIdentidade(session.intent);
+      const d = aposIdentidade(session.intent, session);
       reply_text = d.reply_text;
       next_step = d.next_step;
       sgp_action = d.sgp_action;
-      if (d.sgp_action === 'segunda_via') sgp_payload = { contrato: session.contrato };
-      if (d.sgp_action === 'diagnostico') sgp_payload = { contrato: session.contrato, mac: session.mac || '' };
-      session_patch = { attempts: 0, second_factor_target: undefined, second_factor_pending: undefined };
+      sgp_payload = d.sgp_payload;
+      session_patch = { attempts: 0, second_factor_target: undefined,
+                        second_factor_pending: undefined, verified_at: Date.now() };
     } else {
       const n = attempts + 1;
       if (n >= 3) {
@@ -232,8 +282,8 @@ switch (step) {
     } else {
       reply_text = 'Nome definido como "' + text + '".\n\n' +
         'Agora envie a nova senha do Wi-Fi, de 8 a 63 caracteres, sem acentos.\n' +
-        'Anote onde conseguir consultar: todo aparelho da casa vai precisar dela ' +
-        'para voltar a conectar.';
+        '_Anote onde conseguir consultar: todo aparelho da casa vai precisar ' +
+        'dela para voltar a conectar._';
       next_step = 'awaiting_password';
       session_patch = { ssid_new: text };
     }
@@ -249,13 +299,15 @@ switch (step) {
       reply_text = 'A senha só pode ter letras, números e símbolos comuns (sem acentos/emoji). Envie novamente:';
       next_step = 'awaiting_password';
     } else {
-      // Nao aplica ainda: a alteracao derruba todo mundo da casa e nao ha como
-      // desfazer pelo bot. Mostra o que vai ser aplicado e espera o "sim".
+      // O cpemanage nao tem chamada de leitura: toda requisicao ESCREVE no
+      // roteador. Sem esta confirmacao, uma mensagem enviada por engano ja
+      // derruba a casa inteira, e nao ha como desfazer.
       reply_text = 'Confira antes de aplicar:\n\n' +
         '*Nome da rede:* ' + session.ssid_new + '\n' +
         '*Senha:* ' + text + '\n\n' +
-        'Ao confirmar, todos os aparelhos conectados (celulares, TV, câmeras) vão ' +
-        'desconectar e precisarão ser reconectados com a senha nova.\n\n' +
+        'Ao confirmar, *todos os aparelhos conectados* (celulares, TV, ' +
+        'câmeras) vão desconectar e precisarão ser reconectados com a ' +
+        'senha nova.\n\n' +
         'Digite *1* para confirmar ou *2* para cancelar.';
       next_step = 'awaiting_wifi_confirm';
       session_patch = { senha_new: text };
@@ -266,14 +318,14 @@ switch (step) {
   case 'awaiting_wifi_confirm': {
     if (text === '1') {
       sgp_action = 'definir_wifi';
-      sgp_payload = { contrato: session.contrato, ssid: session.ssid_new, senha: session.senha_new };
+      sgp_payload = { contrato: session.contrato, ssid: session.ssid_new,
+                      senha: session.senha_new };
     } else if (text === '2') {
-      reply_text = 'Tudo bem, não alterei nada. Sua rede continua com o nome e a ' +
-        'senha de antes.\n\nDigite *menu* para voltar ao início.';
+      reply_text = 'Alteração cancelada. Sua rede continua como estava.\n\n' + MENU;
       next_step = 'menu';
-      session_patch = { reset: true };
+      session_patch = { ssid_new: undefined, senha_new: undefined };
     } else {
-      reply_text = 'Não entendi. Digite *1* para aplicar a alteração ou *2* para cancelar.';
+      reply_text = 'Digite *1* para confirmar a alteração ou *2* para cancelar.';
       next_step = 'awaiting_wifi_confirm';
     }
     break;
@@ -323,7 +375,20 @@ const intent = (prev.session_patch && prev.session_patch.intent) || prev.session
 function last8(v) { return String(v || '').replace(/\D/g, '').slice(-8); }
 
 // Mesma decisao usada no Parse & Route: identidade confirmada -> para onde vai.
-function aposIdentidade(it, contrato, mac) {
+// Mesmo texto do Parse & Route: cada Code node tem escopo proprio, entao a
+// funcao precisa existir nos dois lugares.
+function promptSsid(atualRaw) {
+  const atual = String(atualRaw || '').trim();
+  if (atual) {
+    return 'Sua rede Wi-Fi hoje se chama *' + atual + '*.\n\n' +
+           'Qual será o novo nome dela?\n' +
+           '_É o nome que aparece na lista de redes Wi-Fi do celular._';
+  }
+  return 'Qual será o novo nome da sua rede Wi-Fi?\n' +
+         '_É o nome que aparece quando você procura redes Wi-Fi no celular._';
+}
+
+function aposIdentidade(it, contrato, mac, ssidAtual) {
   if (it === 'financeiro') {
     return { sgp_action: 'segunda_via', next_step: 'menu', reply_text: null,
              sgp_payload: { contrato: contrato } };
@@ -337,8 +402,7 @@ function aposIdentidade(it, contrato, mac) {
              reply_text: 'Descreva o problema que você está enfrentando (em uma mensagem):' };
   }
   return { sgp_action: 'none', next_step: 'awaiting_ssid', sgp_payload: {},
-           reply_text: 'Qual será o novo nome da sua rede Wi-Fi?\n' +
-                       'É o nome que aparece quando você procura redes Wi-Fi no celular.' };
+           reply_text: promptSsid(ssidAtual) };
 }
 
 // Resposta do SGP: { msg, contratos: [ ... ] }
@@ -366,6 +430,9 @@ if (contratos.length === 0) {
   // servico_mac casa com o phy_addr da ONU - e o plano B para achar o
   // equipamento quando o filtro por contrato nao retorna nada.
   session_patch.mac = ref.servico_mac || ref.servico_mac2 || '';
+  // Nome atual da rede: usado para o cliente reconhecer de qual Wi-Fi
+  // estamos falando. Pode vir vazio - a base nem sempre tem esse campo.
+  session_patch.wifi_ssid_atual = ref.servico_wifi_ssid || '';
 
   if (ativos.length === 1) {
     session_patch.contrato = ref.contratoId;
@@ -385,7 +452,11 @@ if (contratos.length === 0) {
 
   if (telefoneBate) {
     if (ativos.length === 1) {
-      const d = aposIdentidade(intent, ref.contratoId, session_patch.mac);
+      // Identidade confirmada pelo proprio numero: marca a janela em que os
+      // outros modulos podem ser usados sem repetir CPF.
+      session_patch.verified_at = Date.now();
+      const d = aposIdentidade(intent, ref.contratoId, session_patch.mac,
+                               session_patch.wifi_ssid_atual);
       reply_text = d.reply_text;
       next_step = d.next_step;
       sgp_action = d.sgp_action;
@@ -430,6 +501,12 @@ const resp = $input.first().json;
 
 let reply_text, next_step;
 const session_patch = Object.assign({}, prev.session_patch);
+
+// A senha em claro so existe na sessao entre a tela de confirmacao e esta
+// chamada. Chegou aqui, sai - deu certo ou nao. Sem isso ela ficaria no
+// JSONB de wa_sessions ate a limpeza de 30 min.
+session_patch.senha_new = undefined;
+session_patch.ssid_new = undefined;
 
 // Resposta do SGP: { msg, success }
 const sucesso = !!(resp && resp.success === true);
@@ -806,12 +883,11 @@ nodes = [
 
     code_node("code-extract", "Extract Inbound", JS_EXTRACT, [200, 0]),
 
-    # A sessao carrega CPF e, durante a troca de Wi-Fi, a senha nova que o
-    # cliente digitou. Expirar isso nao pode depender de um cron que alguem
-    # lembrou de agendar: a propria consulta descarta o que passou de 30 min e
-    # varre as sessoes abandonadas de todo mundo no mesmo golpe. Quem sumiu no
-    # meio do atendimento recomeca do menu - que e o desfecho certo de qualquer
-    # forma, ninguem retoma um fluxo meia hora depois.
+    # A sessao guarda CPF, contrato e o verified_at que dispensa revalidacao.
+    # Expirar isso nao pode depender de um cron que alguem lembrou de agendar:
+    # a propria consulta ignora o que passou de 30 min e apaga as sessoes
+    # abandonadas de todo mundo no mesmo golpe. A janela de identidade e de 15
+    # min, entao 30 aqui nunca corta um atendimento que ainda valeria.
     {"parameters": {"operation": "executeQuery",
                     "query": ("WITH expiradas AS (\n"
                               "    DELETE FROM wa_sessions WHERE updated_at < now() - interval '30 minutes'\n"

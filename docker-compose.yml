@@ -120,13 +120,15 @@ services:
       WEBHOOK_EVENTS_QRCODE_UPDATED: "true"
       WEBHOOK_EVENTS_CONNECTION_UPDATE: "true"
 
-      # Versao do WhatsApp Web que o Baileys anuncia ao parear. A versao embutida
-      # na imagem envelhece, e quando fica velha demais o WhatsApp recusa o
-      # pareamento com "codigo invalido" - o QR e gerado normalmente, mas o
-      # celular nao aceita. Pinar aqui resolve sem trocar a imagem da Evolution.
-      # Vazio = usa o default embutido. Para fixar, ponha WA_WEB_VERSION no .env
-      # no formato 2.3000.XXXXXXXXX.
-      CONFIG_SESSION_PHONE_VERSION: ${WA_WEB_VERSION:-}
+      # Nao existe env var para pinar a versao do WhatsApp Web nesta imagem.
+      # Conferido no fonte da v2.3.7: env.config.ts le so CLIENT e NAME, e o
+      # whatsapp.baileys.service.ts resolve a versao em tempo de conexao com
+      # fetchLatestWaWebVersion({}), que baixa https://web.whatsapp.com/sw.js e
+      # tira o client_revision. Se essa chamada falhar (sem egress, DNS, timeout)
+      # o Baileys cai calado na versao embutida no pacote, que envelhece - e ai o
+      # celular recusa o QR com "codigo invalido". Ou seja: versao velha aqui e
+      # sintoma de rede bloqueada ou de imagem defasada, nao de config faltando.
+      # Diagnostico: bash recriar-instancia.sh
       # Nome que aparece em "Aparelhos conectados" no celular da empresa.
       CONFIG_SESSION_PHONE_CLIENT: ${WA_CLIENT_NAME:-Atendimento}
       CONFIG_SESSION_PHONE_NAME: Chrome
