@@ -18,10 +18,35 @@ quanto tempo a alteracao leva para aparecer no celular.
 as ONUs apontando para o ACS, o que e trabalho na OLT e decisao da RCNet.
 
 **Nao e producao.** Em producao o ACS tem acesso administrativo ao roteador de
-todos os assinantes. Antes disso: TLS no CWMP, credencial por equipamento, NBI
-fechada para a internet, backup do Mongo e um dono definido dentro da RCNet.
-Nada disso esta aqui, e nao deve estar - piloto que vira producao por inercia e
-como esse tipo de sistema costuma vazar.
+todos os assinantes. Falta aqui: TLS no CWMP (a ONU ainda fala em http),
+credencial por equipamento, backup do Mongo, e um dono definido dentro da
+RCNet. Piloto que vira producao por inercia e como esse tipo de sistema
+costuma vazar - marque uma data para desligar.
+
+## Por que o SGP ser SaaS muda o desenho
+
+O SGP da RCNet roda em `rcnet.sgp.tsmx.app`. Quem chama a API do ACS nao e um
+servidor de voces: e a nuvem da TSMX, pela internet. Duas consequencias:
+
+1. A NBI **precisa** estar acessivel publicamente. Nao da para deixar numa
+   rede interna, que seria o normal para uma API sem autenticacao.
+2. A NBI do GenieACS **nao tem autenticacao nenhuma**. Quem alcanca a porta
+   7557 le e escreve na configuracao de todos os roteadores gerenciados.
+
+Por isso a 7557 nao e publicada no compose. Na frente dela fica um nginx na
+7558 com TLS e um token no caminho da URL - e, assim que a TSMX informar o IP
+de saida do SGP deles, uma allowlist no `nginx.conf.template`. **Peca esse IP
+junto com a pergunta do JSON**: e uma linha descomentada que fecha o buraco
+inteiro.
+
+Portas e quem fala com cada uma:
+
+| porta | servico | quem acessa |
+|-------|---------|-------------|
+| 7547  | CWMP    | as ONUs, pela internet |
+| 7558  | nginx -> NBI | o SGP (nuvem da TSMX) |
+| 3000  | UI      | a equipe - feche no firewall |
+| 7557  | NBI crua | ninguem de fora; so o nginx |
 
 ## Subir
 
@@ -29,6 +54,14 @@ como esse tipo de sistema costuma vazar.
 cd genieacs
 cp .env.example .env
 sed -i "s/troque-por-um-valor-aleatorio/$(openssl rand -hex 32)/" .env
+sed -i "s/troque-por-um-uuid/$(cat /proc/sys/kernel/random/uuid)/" .env
+
+# Certificado para a NBI. Autoassinado serve para o piloto; se o SGP recusar
+# certificado nao confiavel, troque por um do Let's Encrypt num subdominio.
+mkdir -p certs
+openssl req -x509 -newkey rsa:2048 -nodes -days 365 \
+  -keyout certs/acs.key -out certs/acs.crt -subj "/CN=acs"
+
 docker compose up -d --build
 docker compose logs -f
 ```
@@ -75,21 +108,20 @@ Sistema -> Gerenciador de CPE -> Adicionar:
   escolher GenieACS no dropdown** - e placeholder estatico, nao template por
   gerenciador. O SGP nao documenta na tela o que espera para GenieACS.
 
-  O palpite mais provavel, pela forma do exemplo, e a mesma estrutura com a
-  URL apontando para a **NBI** (porta 7557, nao a 7547 do CWMP):
+  Pela estrutura do exemplo e pelo padrao que a comunidade usa (nginx na
+  frente, https, porta 7558, token no caminho da URL), o formato deve ser:
 
   ```json
-  {"url": "http://IP-DO-SERVIDOR:7557", "username": "", "password": "",
+  {"url": "https://SEU-HOST:7558/SEU-TOKEN", "username": "", "password": "",
    "ping_hosts": ["www.google.com", "www.youtube.com"]}
   ```
 
-  A NBI do GenieACS nao tem autenticacao propria, entao username/password
-  provavelmente ficam vazios ou correspondem a um basic auth posto na frente
-  por proxy.
+  O token e o `ACS_TOKEN` do `.env` desta pasta. A URL aponta para o nginx
+  (7558), nunca para a NBI crua (7557) nem para o CWMP (7547).
 
   Se nao funcionar, nao insista adivinhando: pergunte ao suporte da TSMX qual
   JSON o SGP espera para GenieACS. Eles respondem isso em minutos, e cada
-  tentativa cega aqui custa uma rodada de teste com o tecnico parado.
+  tentativa cega custa uma rodada de teste com o tecnico parado esperando.
 - Marque **Central definir Wifi** se quiser que a Central do Assinante tambem
   ofereca a troca.
 

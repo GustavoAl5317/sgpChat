@@ -1,0 +1,45 @@
+# NGINX na frente da NBI do GenieACS.
+#
+# A NBI (7557) nao tem autenticacao nenhuma: quem alcanca a porta le e escreve
+# na configuracao de TODOS os roteadores gerenciados. E o SGP da RCNet e SaaS
+# (rcnet.sgp.tsmx.app), entao quem chama vem da nuvem da TSMX - a API precisa
+# estar na internet, nao da para esconder numa rede interna.
+#
+# Por isso a 7557 NAO e publicada no compose: so este proxy fala com ela.
+#
+# Duas camadas, porque uma so nao basta:
+#   1) token no caminho da URL - sem ele, 404 antes de tocar o GenieACS
+#   2) allowlist de IP - preencha com o IP de saida da TSMX assim que souber
+#      (peca ao suporte deles). Ate la fica aberto, e por isso o piloto tem
+#      hora para acabar.
+
+server {
+    listen 7558 ssl;
+    server_name _;
+
+    ssl_certificate     /etc/nginx/certs/acs.crt;
+    ssl_certificate_key /etc/nginx/certs/acs.key;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+
+    # Log separado: num piloto, saber QUEM chamou vale mais que economizar disco.
+    access_log /var/log/nginx/nbi.log;
+
+    # Sem token valido no inicio do caminho, nem chega no GenieACS.
+    location / {
+        return 404;
+    }
+
+    location /${ACS_TOKEN}/ {
+        # Allowlist: descomente e ponha o IP de saida do SGP da TSMX.
+        # allow 203.0.113.10;
+        # deny  all;
+
+        rewrite ^/${ACS_TOKEN}/(.*)$ /$1 break;
+        proxy_pass http://genieacs:7557;
+        proxy_set_header Host $host;
+        proxy_read_timeout 120s;
+
+        # O SGP manda PUT/POST com corpo grande ao aplicar parametros.
+        client_max_body_size 10m;
+    }
+}

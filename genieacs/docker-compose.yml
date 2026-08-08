@@ -36,18 +36,35 @@ services:
       GENIEACS_UI_INTERFACE: 0.0.0.0
     ports:
       # 7547 CWMP: e por aqui que a ONU fala. Precisa estar acessivel a partir
-      # da rede do cliente - e o unico que tem mesmo de ficar exposto.
+      # da rede do cliente - e o unico do GenieACS que fica exposto direto.
       - "7547:7547"
-      # 7557 NBI: a API que o SGP consome. Exposta so enquanto for piloto;
-      # ela nao tem autenticacao propria, entao em producao fica atras de
-      # proxy com autenticacao ou restrita ao IP do SGP.
-      - "7557:7557"
       # 7567 FS: servidor de arquivos (firmware, configs).
       - "7567:7567"
-      # 3000 UI: interface web. Usuario admin e criado no primeiro acesso.
+      # 3000 UI: interface web, so para a equipe. Feche no firewall para os IPs
+      # de voces - ela tem login, mas nao precisa estar aberta ao mundo.
       - "3000:3000"
+      # A 7557 (NBI) NAO e publicada de proposito: sem autenticacao propria,
+      # quem alcanca a porta escreve na config de todos os roteadores. Quem
+      # fala com ela e o nginx abaixo, dentro da rede do compose.
     volumes:
       - genieacs_ext:/opt/genieacs/ext
+    networks: [acs]
+
+  # O SGP da RCNet e SaaS: quem chama a NBI vem da nuvem da TSMX, pela
+  # internet. Este proxy e o que torna isso aceitavel - TLS, token no caminho
+  # e um lugar para pendurar a allowlist de IP quando a TSMX informar o dela.
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: genieacs-nginx
+    restart: unless-stopped
+    depends_on: [genieacs]
+    environment:
+      ACS_TOKEN: ${ACS_TOKEN}
+    volumes:
+      - ./nginx.conf.template:/etc/nginx/templates/nbi.conf.template:ro
+      - ./certs:/etc/nginx/certs:ro
+    ports:
+      - "7558:7558"
     networks: [acs]
 
 volumes:
