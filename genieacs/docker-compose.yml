@@ -1,0 +1,59 @@
+# GenieACS para o PILOTO de troca de Wi-Fi - UMA ONU, de funcionario.
+#
+# Nao e implantacao de producao. Producao gerencia o roteador de todos os
+# assinantes: precisa de TLS no CWMP, credencial forte, backup do Mongo e um
+# dono definido. Aqui o objetivo e so provar que o caminho
+# bot -> SGP -> GenieACS -> ONU funciona, com um equipamento que alguem da
+# equipe controla e pode desligar.
+#
+# Sobe separado do stack do bot de proposito: se algo aqui travar, o
+# atendimento continua de pe.
+#
+#   cd genieacs && cp .env.example .env && nano .env && docker compose up -d
+#
+services:
+  mongo:
+    image: mongo:4.4
+    container_name: genieacs-mongo
+    restart: unless-stopped
+    volumes:
+      - mongo_data:/data/db
+    # Sem "ports:": so o GenieACS alcanca o banco.
+    networks: [acs]
+
+  genieacs:
+    build: .
+    container_name: genieacs
+    restart: unless-stopped
+    depends_on: [mongo]
+    environment:
+      GENIEACS_MONGODB_CONNECTION_URL: mongodb://mongo/genieacs
+      GENIEACS_UI_JWT_SECRET: ${GENIEACS_JWT_SECRET}
+      GENIEACS_EXT_DIR: /opt/genieacs/ext
+      GENIEACS_CWMP_INTERFACE: 0.0.0.0
+      GENIEACS_NBI_INTERFACE: 0.0.0.0
+      GENIEACS_FS_INTERFACE: 0.0.0.0
+      GENIEACS_UI_INTERFACE: 0.0.0.0
+    ports:
+      # 7547 CWMP: e por aqui que a ONU fala. Precisa estar acessivel a partir
+      # da rede do cliente - e o unico que tem mesmo de ficar exposto.
+      - "7547:7547"
+      # 7557 NBI: a API que o SGP consome. Exposta so enquanto for piloto;
+      # ela nao tem autenticacao propria, entao em producao fica atras de
+      # proxy com autenticacao ou restrita ao IP do SGP.
+      - "7557:7557"
+      # 7567 FS: servidor de arquivos (firmware, configs).
+      - "7567:7567"
+      # 3000 UI: interface web. Usuario admin e criado no primeiro acesso.
+      - "3000:3000"
+    volumes:
+      - genieacs_ext:/opt/genieacs/ext
+    networks: [acs]
+
+volumes:
+  mongo_data:
+  genieacs_ext:
+
+networks:
+  acs:
+    driver: bridge
