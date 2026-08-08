@@ -453,7 +453,7 @@ check(!/Sinal óptico/.test(ttx.reply), 'valor de Tx nao e exibido como sinal re
 // Sem ACS cadastrado no SGP a opcao 1 falha SEMPRE, no ultimo passo, depois de
 // o cliente ja ter provado quem e e escolhido nome e senha. Melhor nao oferecer.
 console.log('\n=== Wi-Fi desligado por configuracao ===');
-ENV = { WIFI_HABILITADO: 'false' };
+ENV = { WIFI_MODO: 'off' };
 
 let td = turn(null, 'oi', PHONE_OK);
 check(!/Alterar nome\/senha do Wi-Fi/.test(td.reply), 'opcao de Wi-Fi sai do menu');
@@ -472,9 +472,46 @@ check(/atendente/i.test(td.reply), 'digitar 1 explica e aponta para o atendente'
 td = turn(null, '2', PHONE_OK);
 check(td.step === 'awaiting_cpf', 'boleto continua funcionando com o Wi-Fi desligado');
 
+// ============ Wi-Fi por chamado (provedor sem ACS, mas quer atender) ============
+// Sem ACS a alternativa real nao era "esperar": era o cliente ligar para o
+// suporte. Aqui ele se identifica, escolhe o que quer, e a equipe recebe um
+// pedido estruturado em vez de uma ligacao.
+console.log('\n=== Wi-Fi por chamado ===');
+ENV = { WIFI_MODO: 'chamado' };
+
+let tc = ateIdentidade('1', PHONE_OK);
+check(tc.t.step === 'awaiting_wifi_what', 'modo chamado mantem a opcao no menu');
+let sc = turn(tc.s, '3', PHONE_OK).sessionRow;
+sc = turn(sc, 'RedeDoJoao', PHONE_OK).sessionRow;
+let rc = turn(sc, 'SenhaBoa123', PHONE_OK); sc = rc.sessionRow;
+check(rc.step === 'awaiting_wifi_confirm', 'modo chamado tambem pede confirmacao');
+check(!/desconectar/.test(rc.reply),
+      'nao promete queda dos aparelhos - nada e aplicado agora');
+check(/chamado/i.test(rc.reply), 'explica que vai abrir um chamado');
+check(/vis[íi]vel para a equipe/i.test(rc.reply),
+      'avisa que a senha ficara visivel para a equipe tecnica');
+
+let pedido = null;
+rc = turn(sc, '1', PHONE_OK, { protocolo: '202608071234' }, null, null,
+          (p) => { pedido = p; });
+check(/RedeDoJoao/.test(pedido.conteudo) && /SenhaBoa123/.test(pedido.conteudo),
+      'o chamado leva nome e senha para o tecnico aplicar');
+check(pedido.contrato === ativos[0].contratoId, 'o chamado vai no contrato certo');
+check(/202608071234/.test(rc.reply), 'cliente recebe o protocolo');
+check(rc.step === 'menu', 'volta ao menu depois de registrar');
+
+// So a senha: o chamado nao pode pedir troca de nome que ninguem solicitou
+tc = ateIdentidade('1', PHONE_OK);
+sc = turn(tc.s, '2', PHONE_OK).sessionRow;
+sc = turn(sc, 'OutraSenha77', PHONE_OK).sessionRow;
+pedido = null;
+turn(sc, '1', PHONE_OK, { protocolo: '1' }, null, null, (p) => { pedido = p; });
+check(/OutraSenha77/.test(pedido.conteudo) && !/Novo nome/.test(pedido.conteudo),
+      'so senha -> chamado nao menciona nome novo');
+
 ENV = {};
 td = turn(null, 'oi', PHONE_OK);
-check(/Alterar nome\/senha do Wi-Fi/.test(td.reply), 'sem a variavel, o padrao e ligado');
+check(/Alterar nome\/senha do Wi-Fi/.test(td.reply), 'sem a variavel, o padrao e aplicar pelo ACS');
 
 console.log('\n----------------------------------------');
 console.log(ok + ' passaram, ' + fail + ' falharam');

@@ -13,7 +13,10 @@
 #
 services:
   mongo:
-    image: mongo:4.4
+    # 7.0 e o que a comunidade roda com GenieACS 1.2.13+. Nao baixe essa versao
+    # sem conferir: o Mongo so aceita upgrade uma major por vez, entao comecar
+    # numa antiga cria trabalho de migracao que nao precisava existir.
+    image: mongo:7.0
     container_name: genieacs-mongo
     restart: unless-stopped
     volumes:

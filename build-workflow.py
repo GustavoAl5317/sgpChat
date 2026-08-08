@@ -92,15 +92,23 @@ function normDate(v) {
   return s.replace(/\D/g, '');
 }
 
-// Trocar Wi-Fi exige um Gerenciador de CPE (ACS/TR-069) cadastrado no SGP. Sem
-// ele o SGP responde "O Servico de internet nao possui Gerenciador de CPE
-// configurado" em TODA chamada, e a opcao vira uma promessa que sempre falha:
-// o cliente escolhe, prova quem e, digita nome e senha, e no fim cai na fila do
-// atendimento humano com um problema que atendente nenhum resolve.
-// Enquanto o provedor nao tiver ACS, WIFI_HABILITADO=false tira a opcao do
-// menu. Melhor nao oferecer do que oferecer e frustrar no ultimo passo.
-const WIFI_ON = String($env.WIFI_HABILITADO === undefined ? 'true' : $env.WIFI_HABILITADO)
-                  .trim().toLowerCase() !== 'false';
+// Aplicar Wi-Fi de verdade exige um Gerenciador de CPE (ACS/TR-069) cadastrado
+// no SGP. Sem ele o SGP responde "O Servico de internet nao possui Gerenciador
+// de CPE configurado" em TODA chamada. Como implantar ACS depende de
+// provisionar as ONUs na OLT - trabalho do provedor, nao nosso - o modulo tem
+// tres modos:
+//
+//   acs     aplica direto pelo cpemanage. Exige ACS configurado.
+//   chamado coleta o que o cliente quer e abre uma ocorrencia no SGP para a
+//           equipe aplicar. Nao automatiza, mas resolve HOJE: do lado do
+//           cliente o atendimento e o mesmo, e a equipe recebe um pedido
+//           estruturado em vez de uma ligacao.
+//   off     tira a opcao do menu.
+//
+// O modo 'chamado' existe porque a alternativa real nao era "esperar o ACS", e
+// sim o cliente ligar para o suporte - o que ja acontece, so que sem registro.
+const WIFI_MODO = String($env.WIFI_MODO || 'acs').trim().toLowerCase();
+const WIFI_ON = WIFI_MODO !== 'off';
 
 const MENU = 'Olá! Sou o atendimento automático.\n\n' +
   (WIFI_ON ? '*1* - Alterar nome/senha do Wi-Fi\n' : '') +
@@ -169,10 +177,23 @@ function formWifi(p) {
 
 // Tela de confirmacao: mostra so o que vai mudar. Repetir o nome atual como se
 // fosse alteracao faria o cliente achar que a rede vai ser renomeada.
-function confirmarWifi(ssid, senha) {
+function confirmarWifi(ssid, senha, modo) {
   const linhas = [];
   if (ssid) linhas.push('*Novo nome da rede:* ' + ssid);
   if (senha) linhas.push('*Nova senha:* ' + senha);
+  // No modo 'chamado' quem aplica e a equipe, nao o bot. Prometer que os
+  // aparelhos vao cair "ao confirmar" seria mentira: nada acontece agora.
+  if (modo === 'chamado') {
+    let p = 'Confira o pedido antes de eu registrar:\n\n' + linhas.join('\n') + '\n\n';
+    p += 'Vou abrir um chamado para nossa equipe aplicar a alteração. ' +
+         'Você recebe o número do protocolo aqui.\n\n';
+    if (senha) {
+      p += '_A senha ficará visível para a equipe técnica, que precisa dela ' +
+           'para configurar o equipamento._\n\n';
+    }
+    return p + 'Digite *1* para confirmar ou *2* para cancelar.';
+  }
+
   let t = 'Confira antes de aplicar:\n\n' + linhas.join('\n') + '\n\n';
   if (senha) {
     t += 'Ao confirmar, *todos os aparelhos conectados* (celulares, TV, ' +
@@ -364,7 +385,7 @@ switch (step) {
       next_step = 'awaiting_ssid';
     } else if (session.wifi_alvo === 'nome') {
       // So o nome: nao ha senha a pedir, vai direto para a confirmacao.
-      reply_text = confirmarWifi(text, null);
+      reply_text = confirmarWifi(text, null, WIFI_MODO);
       next_step = 'awaiting_wifi_confirm';
       session_patch = { ssid_new: text };
     } else {
@@ -391,7 +412,7 @@ switch (step) {
       // roteador. Sem esta confirmacao, uma mensagem enviada por engano ja
       // derruba a casa inteira, e nao ha como desfazer.
       reply_text = confirmarWifi(
-        session.wifi_alvo === 'senha' ? null : session.ssid_new, text);
+        session.wifi_alvo === 'senha' ? null : session.ssid_new, text, WIFI_MODO);
       next_step = 'awaiting_wifi_confirm';
       session_patch = { senha_new: text };
     }
@@ -406,9 +427,20 @@ switch (step) {
       const p = { contrato: session.contrato,
                   ssid:  alvo === 'senha' ? null : (session.ssid_new || null),
                   senha: alvo === 'nome'  ? null : (session.senha_new || null) };
-      p.form = formWifi(p);
-      sgp_action = 'definir_wifi';
-      sgp_payload = p;
+      if (WIFI_MODO === 'chamado') {
+        // Sem ACS, o pedido vira ocorrencia no SGP para a equipe aplicar. Vai
+        // com tudo que o tecnico precisa para nao ter de ligar de volta.
+        const det = ['Solicitacao de alteracao de Wi-Fi pelo atendimento automatico.'];
+        if (p.ssid)  det.push('Novo nome da rede: ' + p.ssid);
+        if (p.senha) det.push('Nova senha: ' + p.senha);
+        det.push('Solicitado pelo WhatsApp ' + phone + ', identidade validada.');
+        sgp_action = 'abrir_chamado';
+        sgp_payload = { contrato: session.contrato, conteudo: det.join('\n') };
+      } else {
+        p.form = formWifi(p);
+        sgp_action = 'definir_wifi';
+        sgp_payload = p;
+      }
     } else if (text === '2') {
       reply_text = 'Alteração cancelada. Sua rede continua como estava.\n\n' + MENU;
       next_step = 'menu';
@@ -508,10 +540,23 @@ function formWifi(p) {
 
 // Tela de confirmacao: mostra so o que vai mudar. Repetir o nome atual como se
 // fosse alteracao faria o cliente achar que a rede vai ser renomeada.
-function confirmarWifi(ssid, senha) {
+function confirmarWifi(ssid, senha, modo) {
   const linhas = [];
   if (ssid) linhas.push('*Novo nome da rede:* ' + ssid);
   if (senha) linhas.push('*Nova senha:* ' + senha);
+  // No modo 'chamado' quem aplica e a equipe, nao o bot. Prometer que os
+  // aparelhos vao cair "ao confirmar" seria mentira: nada acontece agora.
+  if (modo === 'chamado') {
+    let p = 'Confira o pedido antes de eu registrar:\n\n' + linhas.join('\n') + '\n\n';
+    p += 'Vou abrir um chamado para nossa equipe aplicar a alteração. ' +
+         'Você recebe o número do protocolo aqui.\n\n';
+    if (senha) {
+      p += '_A senha ficará visível para a equipe técnica, que precisa dela ' +
+           'para configurar o equipamento._\n\n';
+    }
+    return p + 'Digite *1* para confirmar ou *2* para cancelar.';
+  }
+
   let t = 'Confira antes de aplicar:\n\n' + linhas.join('\n') + '\n\n';
   if (senha) {
     t += 'Ao confirmar, *todos os aparelhos conectados* (celulares, TV, ' +

@@ -72,10 +72,9 @@ services:
       SGP_API_TOKEN: ${SGP_API_TOKEN}
       SGP_APP_NAME: ${SGP_APP_NAME}
       SGP_OCORRENCIA_TIPO: ${SGP_OCORRENCIA_TIPO}
-      # false tira a opcao de Wi-Fi do menu. Necessario enquanto o SGP do
-      # provedor nao tiver um Gerenciador de CPE (ACS) cadastrado - sem ele a
-      # opcao existe, o cliente percorre o fluxo todo e falha no ultimo passo.
-      WIFI_HABILITADO: ${WIFI_HABILITADO:-true}
+      # acs | chamado | off - veja o .env.example. Sem Gerenciador de CPE
+      # cadastrado no SGP, 'acs' falha em toda chamada.
+      WIFI_MODO: ${WIFI_MODO:-acs}
       EVOLUTION_API_URL: http://evolution:8080
       EVOLUTION_INSTANCE: ${EVOLUTION_INSTANCE}
       EVOLUTION_API_KEY: ${EVOLUTION_API_KEY}
