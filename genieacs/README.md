@@ -76,9 +76,10 @@ docker compose up -d --build
 docker compose logs -f
 ```
 
-A interface fica em `http://<ip-do-servidor>:3000`. O primeiro acesso pede para
-criar o usuário admin. Feche essa porta no firewall para IPs de fora da equipe
-assim que criar o usuário.
+A interface fica em `http://<ip-do-servidor>:3001` (porta 3000 do host já
+estava em uso por outro serviço nesta VM). O primeiro acesso pede para criar o
+usuário admin. Feche essa porta no firewall para IPs de fora da equipe assim
+que criar o usuário.
 
 Confira que os serviços responderam:
 

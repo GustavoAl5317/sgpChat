@@ -23,6 +23,12 @@ services:
     image: mongo:7.0
     container_name: genieacs-mongo
     restart: unless-stopped
+    # Sem limite, o WiredTiger cache do Mongo reserva ~50% da RAM do host por
+    # padrao - nesta VM (3.8GB, compartilhada com o stack do bot em producao)
+    # isso e inaceitavel. Teto explicito para nunca disputar memoria com o
+    # atendimento no WhatsApp.
+    command: ["--wiredTigerCacheSizeGB", "0.5"]
+    mem_limit: 700m
     volumes:
       - mongo_data:/data/db
     # Sem "ports:": so o GenieACS alcanca o banco.
@@ -33,6 +39,7 @@ services:
     container_name: genieacs
     restart: unless-stopped
     depends_on: [mongo]
+    mem_limit: 512m
     environment:
       GENIEACS_MONGODB_CONNECTION_URL: mongodb://mongo/genieacs
       GENIEACS_UI_JWT_SECRET: ${GENIEACS_JWT_SECRET}
@@ -47,9 +54,11 @@ services:
       - "7547:7547"
       # 7567 FS: servidor de arquivos (firmware, configs).
       - "7567:7567"
-      # 3000 UI: interface web, so para a equipe. Feche no firewall para os IPs
+      # 3001->3000 UI: interface web, so para a equipe. A 3000 do host ja
+      # estava em uso por outro servico nesta VM (confirmado em producao,
+      # 2026-08-12), por isso o remapeamento. Feche no firewall para os IPs
       # de voces - ela tem login, mas nao precisa estar aberta ao mundo.
-      - "3000:3000"
+      - "3001:3000"
       # A 7557 (NBI) NAO e publicada de proposito: sem autenticacao propria,
       # quem alcanca a porta escreve na config de todos os roteadores. Quem
       # fala com ela e o nginx abaixo, dentro da rede do compose.
@@ -65,6 +74,7 @@ services:
     container_name: genieacs-nginx
     restart: unless-stopped
     depends_on: [genieacs]
+    mem_limit: 64m
     environment:
       ACS_TOKEN: ${ACS_TOKEN}
     volumes:

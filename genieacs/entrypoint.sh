@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 # Sobe os quatro servicos do GenieACS e derruba o container se qualquer um
 # morrer. Sem isso o container fica "de pe" com o CWMP morto, a ONU para de
 # reportar e ninguem percebe ate alguem testar na mao.

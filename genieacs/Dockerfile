@@ -17,4 +17,4 @@ ENV NODE_OPTIONS=--enable-source-maps
 # nao vale a pena quatro containers - mas se um morrer, o container inteiro cai
 # e o restart do compose sobe tudo de novo, em vez de ficar meio funcionando.
 COPY --chown=node:node entrypoint.sh /entrypoint.sh
-ENTRYPOINT ["/bin/sh", "/entrypoint.sh"]
+ENTRYPOINT ["/bin/bash", "/entrypoint.sh"]
