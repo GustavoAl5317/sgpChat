@@ -59,7 +59,8 @@ function inbound(text, phone) {
 // `espiar` recebe o sgp_payload montado, para os testes conferirem o corpo que
 // sairia para o SGP - o node de HTTP nao roda aqui, entao e o unico ponto onde
 // da para verificar que campo nenhum viaja vazio.
-function turn(sessionRow, text, phone, sgpResponse, faturas, diag, espiar) {
+function turn(sessionRow, text, phone, sgpResponse, faturas, diag, espiar, acs) {
+  let montado = null;
   const inb = inbound(text, phone);
   if (!inb) return { skipped: true, sessionRow };
   let r = run('Parse & Route', sessionRow ? [sessionRow] : [], { 'Extract Inbound': inb });
@@ -78,6 +79,17 @@ function turn(sessionRow, text, phone, sgpResponse, faturas, diag, espiar) {
     r = run('Processar Segunda Via', [faturas || sgpResponse], { 'Parse & Route': r });
   } else if (r.sgp_action === 'abrir_chamado') {
     r = run('Processar Chamado', [sgpResponse], { 'Parse & Route': r });
+  } else if (r.sgp_action === 'definir_wifi_acs') {
+    // Caminho da NBI: buscar o device -> montar a tarefa -> aplicar. O IF
+    // "Da para aplicar no ACS?" e reproduzido aqui pelo teste de acs_device_id.
+    montado = run('Montar Tarefa Wifi', [(acs && acs.busca) || { statusCode: 200, body: [] }],
+                  { 'Parse & Route': r });
+    if (!montado.acs_device_id) {
+      r = run('ACS Nao Aplicou', [montado], {});
+    } else {
+      r = run('Processar Definir Wifi', [(acs && acs.aplicar) || { statusCode: 200, body: {} }],
+              { 'Parse & Route': r, 'Montar Tarefa Wifi': montado });
+    }
   }
 
   // Diagnostico encadeia: buscar ONU -> detalhe -> info
@@ -93,7 +105,8 @@ function turn(sessionRow, text, phone, sgpResponse, faturas, diag, espiar) {
 
   const p = run('Preparar Persistencia', [r], {});
   return { reply: p.reply_text, step: p.step, sessionRow: { step: p.step, data: p.data },
-           data: JSON.parse(p.data), audit: p.audit ? JSON.parse(p.audit) : null };
+           data: JSON.parse(p.data), audit: p.audit ? JSON.parse(p.audit) : null,
+           montado: montado };
 }
 
 let ok = 0, fail = 0;
@@ -508,6 +521,191 @@ pedido = null;
 turn(sc, '1', PHONE_OK, { protocolo: '1' }, null, null, (p) => { pedido = p; });
 check(/OutraSenha77/.test(pedido.conteudo) && !/Novo nome/.test(pedido.conteudo),
       'so senha -> chamado nao menciona nome novo');
+
+// ============ Wi-Fi direto na NBI do GenieACS (WIFI_MODO=genieacs) ============
+// Aqui o bot deixa de pedir ao SGP e escreve ele mesmo no equipamento. O que
+// o cpemanage resolvia sozinho - achar o device e saber que parametro o modelo
+// aceita - passa a ser responsabilidade nossa, e e isso que estes testes
+// cobrem. A regra de ouro: na duvida, NAO escreve.
+console.log('\n=== Wi-Fi pela NBI do GenieACS ===');
+ENV = { WIFI_MODO: 'genieacs' };
+
+// A NBI devolve cada parametro como {_value, _writable, _timestamp}.
+function par(v, writable) {
+  return { _value: v, _writable: writable !== false, _timestamp: '2026-08-29T00:00:00Z' };
+}
+// Uma instancia de WLANConfiguration. banda = null simula firmware que nao
+// informa 2.4/5 GHz - caso comum e que muda a estrategia de escolha.
+function rede(banda, o) {
+  o = o || {};
+  const i = { Enable: par(o.enable === undefined ? true : o.enable) };
+  if (o.semSsid !== true) i.SSID = par('RedeAtual', o.ssidWritable);
+  if (banda) i.OperatingFrequencyBand = par(banda);
+  if (o.semSenha !== true) i.KeyPassphrase = par('', o.senhaWritable);
+  if (o.psk) i.PreSharedKey = { '1': { PreSharedKey: par('') } };
+  return i;
+}
+function device(redes, id) {
+  return { _id: id || 'ZTEG-F670L-ABC123',
+           _deviceId: { _SerialNumber: 'ABC123', _ProductClass: 'F670L' },
+           InternetGatewayDevice: { LANDevice: { '1': { WLANConfiguration: redes } } } };
+}
+const ACHOU = { statusCode: 200, body: [device({ '1': rede('2.4GHz'), '5': rede('5GHz') })] };
+const APLICOU = { statusCode: 200, body: {} };
+
+// Fluxo completo ate a confirmacao, no modo genieacs.
+function ateConfirmar(alvo, valores) {
+  const a = ateIdentidade('1', PHONE_OK);
+  let ss = turn(a.s, alvo, PHONE_OK).sessionRow;
+  valores.forEach(function (v) { ss = turn(ss, v, PHONE_OK).sessionRow; });
+  return ss;
+}
+
+let sa = ateConfirmar('3', ['RedeNova', 'SenhaNova123']);
+let ra = turn(sa, '1', PHONE_OK, null, null, null, null, { busca: ACHOU, aplicar: APLICOU });
+check(ra.step === 'menu', 'aplicou pela NBI -> volta ao menu');
+check(/Pronto!/.test(ra.reply), 'aplicou pela NBI -> confirma para o cliente');
+check(/já está valendo/.test(ra.reply),
+      'pela NBI nao promete "alguns minutos": o 200 e o roteador confirmando');
+
+// A tarefa precisa alcancar as DUAS radios, senao o assinante fica com 2.4 GHz
+// numa senha e 5 GHz noutra - falha silenciosa que vira chamado depois.
+const alvos = ra.montado.acs_task.parameterValues.map(function (x) { return x[0]; });
+check(alvos.some(function (c) { return /WLANConfiguration\.1\.SSID$/.test(c); }) &&
+      alvos.some(function (c) { return /WLANConfiguration\.5\.SSID$/.test(c); }),
+      'escreve o SSID nas duas bandas');
+check(alvos.filter(function (c) { return /KeyPassphrase$/.test(c); }).length === 2,
+      'escreve a senha nas duas bandas');
+check(ra.montado.acs_device_id === 'ZTEG-F670L-ABC123', 'usa o _id do device encontrado');
+
+// O log de auditoria e consultado pela equipe toda; a senha do assinante nao
+// pode estar nele. A NBI ECOA a tarefa quando falha, entao isso nao e obvio.
+check(!/SenhaNova123/.test(JSON.stringify(ra.audit)),
+      'senha nao vai para o log de auditoria');
+check(ra.audit.resposta_sgp.via === 'genieacs' && ra.audit.sucesso === true,
+      'auditoria registra a via e o resultado');
+
+// A busca precisa sair pelo usuario PPPoE do contrato - e a unica chave que o
+// SGP e o equipamento enxergam com o mesmo valor.
+let consulta = null;
+sa = ateConfirmar('1', ['OutroNome']);
+turn(sa, '1', PHONE_OK, null, null, null, function (p) { consulta = p; },
+     { busca: ACHOU, aplicar: APLICOU });
+check(/exemplo999/.test(consulta.acs_query || ''),
+      'a busca no ACS vai pelo login PPPoE do contrato');
+check(/\$or/.test(consulta.acs_query || ''),
+      'sem saber o caminho do PPPoE do parque, tenta mais de um');
+
+// So o nome: nenhum parametro de senha pode viajar
+let rn = turn(sa, '1', PHONE_OK, null, null, null, null, { busca: ACHOU, aplicar: APLICOU });
+const soNome = rn.montado.acs_task.parameterValues.map(function (x) { return x[0]; });
+check(soNome.length === 2 && soNome.every(function (c) { return /SSID$/.test(c); }),
+      'so nome -> a tarefa nao toca em senha');
+
+// --------- Os casos em que NAO se escreve ---------
+// Equipamento que nunca chegou no ACS: e o desfecho esperado para boa parte da
+// base durante o rollout, nao uma excecao rara.
+sa = ateConfirmar('3', ['RedeNova', 'SenhaNova123']);
+let rf = turn(sa, '1', PHONE_OK, null, null, null, null,
+              { busca: { statusCode: 200, body: [] } });
+check(rf.step === 'human_handoff', 'device nao provisionado -> atendente');
+check(/continua como estava/.test(rf.reply), 'diz que a rede nao foi mexida');
+check(rf.audit.resposta_sgp.falha === 'device_nao_encontrado',
+      'motivo fica no log para o time de provisionamento');
+check(!/SenhaNova123/.test(JSON.stringify(rf.audit)), 'falha tambem nao loga a senha');
+
+// Duas chaves apontando para equipamentos diferentes. Escolher um seria
+// escrever no roteador de outra pessoa.
+sa = ateConfirmar('3', ['RedeNova', 'SenhaNova123']);
+rf = turn(sa, '1', PHONE_OK, null, null, null, null,
+          { busca: { statusCode: 200, body: [device({ '1': rede('2.4GHz') }, 'A-1'),
+                                             device({ '1': rede('2.4GHz') }, 'B-2')] } });
+check(rf.step === 'human_handoff' && rf.audit.resposta_sgp.falha === 'device_ambiguo',
+      'dois devices -> nao escolhe nenhum');
+
+// Modelo sem a arvore de Wi-Fi lida (ou TR-181, que tem outro mapeamento)
+sa = ateConfirmar('3', ['RedeNova', 'SenhaNova123']);
+rf = turn(sa, '1', PHONE_OK, null, null, null, null,
+          { busca: { statusCode: 200, body: [{ _id: 'X-1', _deviceId: {},
+                     InternetGatewayDevice: { DeviceInfo: {} } }] } });
+check(rf.audit.resposta_sgp.falha === 'sem_wlanconfiguration',
+      'sem WLANConfiguration -> nao tenta adivinhar caminho');
+
+// Senha que o modelo nao aceita escrever: aplicar so o nome deixaria o cliente
+// achando que a senha mudou.
+sa = ateConfirmar('3', ['RedeNova', 'SenhaNova123']);
+rf = turn(sa, '1', PHONE_OK, null, null, null, null,
+          { busca: { statusCode: 200,
+                     body: [device({ '1': rede('2.4GHz'),
+                                     '5': rede('5GHz', { senhaWritable: false }) })] } });
+check(rf.audit.resposta_sgp.falha === 'senha_nao_escrivel',
+      'radio que nao aceita a senha -> recusa tudo em vez de aplicar pela metade');
+
+// --------- Escolha de quais redes mudar ---------
+// Rede desligada e quase sempre a de visitantes: renomea-la nao ajuda ninguem.
+sa = ateConfirmar('1', ['NomeNovo']);
+let rd = turn(sa, '1', PHONE_OK, null, null, null, null,
+              { busca: { statusCode: 200,
+                         body: [device({ '1': rede('2.4GHz'),
+                                         '2': rede('2.4GHz', { enable: false }),
+                                         '5': rede('5GHz') })] },
+                aplicar: APLICOU });
+check(JSON.stringify(rd.montado.acs_redes) === '[1,5]', 'rede desligada fica de fora');
+
+// Firmware que informa a banda: muda a PRIMEIRA de cada uma (a principal).
+sa = ateConfirmar('1', ['NomeNovo']);
+rd = turn(sa, '1', PHONE_OK, null, null, null, null,
+          { busca: { statusCode: 200,
+                     body: [device({ '1': rede('2.4GHz'), '2': rede('2.4GHz'),
+                                     '5': rede('5GHz'), '6': rede('5GHz') })] },
+            aplicar: APLICOU });
+check(JSON.stringify(rd.montado.acs_redes) === '[1,5]',
+      'com banda conhecida, muda so a rede principal de cada banda');
+
+// Firmware que nao informa a banda: nao da para distinguir principal de
+// visitante, entao vale o mesmo efeito de novo_ssid + novo_ssid_5g.
+sa = ateConfirmar('1', ['NomeNovo']);
+rd = turn(sa, '1', PHONE_OK, null, null, null, null,
+          { busca: { statusCode: 200,
+                     body: [device({ '1': rede(null), '5': rede(null) })] },
+            aplicar: APLICOU });
+check(JSON.stringify(rd.montado.acs_redes) === '[1,5]',
+      'sem banda informada, muda todas as redes ligadas');
+
+// PreSharedKey e KeyPassphrase convivem e ha modelo que so honra um deles.
+sa = ateConfirmar('2', ['SenhaDupla123']);
+rd = turn(sa, '1', PHONE_OK, null, null, null, null,
+          { busca: { statusCode: 200,
+                     body: [device({ '1': rede('2.4GHz', { psk: true }) })] },
+            aplicar: APLICOU });
+const dupla = rd.montado.acs_task.parameterValues.map(function (x) { return x[0]; });
+check(dupla.some(function (c) { return /KeyPassphrase$/.test(c); }) &&
+      dupla.some(function (c) { return /PreSharedKey\.1\.PreSharedKey$/.test(c); }),
+      'quando os dois parametros de senha existem, os dois vao');
+
+// --------- Roteador desligado: 202, tarefa na fila ---------
+// Nao e erro e nao e sucesso. O cliente precisa saber que a queda vai chegar
+// depois, senao ele perde a casa toda sem entender por que.
+sa = ateConfirmar('3', ['RedeNova', 'SenhaNova123']);
+let rq = turn(sa, '1', PHONE_OK, null, null, null, null,
+              { busca: ACHOU, aplicar: { statusCode: 202, body: {} } });
+check(!/Pronto!/.test(rq.reply), '202 nao e anunciado como sucesso');
+check(/agendada/.test(rq.reply), '202 -> explica que a alteracao ficou agendada');
+check(/senha nova/.test(rq.reply), '202 com senha -> avisa que os aparelhos vao cair depois');
+check(rq.audit.enfileirado === true, 'auditoria distingue enfileirado de aplicado');
+
+// Falha real do equipamento (parametro recusado): a NBI ecoa a tarefa - com a
+// senha dentro. Ela nao pode vazar para o log.
+sa = ateConfirmar('3', ['RedeNova', 'SenhaNova123']);
+let rx = turn(sa, '1', PHONE_OK, null, null, null, null,
+              { busca: ACHOU,
+                aplicar: { statusCode: 202,
+                           body: { fault: { detail: { faultCode: '9005' } },
+                                   parameterValues: [['x', 'SenhaNova123']] } } });
+check(rx.step === 'human_handoff', 'fault do equipamento -> atendente, nao "tente de novo"');
+check(!/SenhaNova123/.test(JSON.stringify(rx.audit)),
+      'eco da tarefa na falha nao leva a senha para o log');
+check(rx.audit.resposta_sgp.fault.faultCode === '9005', 'o faultCode fica no log');
 
 ENV = {};
 td = turn(null, 'oi', PHONE_OK);

@@ -98,12 +98,20 @@ function normDate(v) {
 // provisionar as ONUs na OLT - trabalho do provedor, nao nosso - o modulo tem
 // tres modos:
 //
-//   acs     aplica direto pelo cpemanage. Exige ACS configurado.
-//   chamado coleta o que o cliente quer e abre uma ocorrencia no SGP para a
-//           equipe aplicar. Nao automatiza, mas resolve HOJE: do lado do
-//           cliente o atendimento e o mesmo, e a equipe recebe um pedido
-//           estruturado em vez de uma ligacao.
-//   off     tira a opcao do menu.
+//   acs      aplica pelo cpemanage do SGP. Exige Gerenciador de CPE cadastrado.
+//   genieacs aplica falando DIRETO com a NBI do GenieACS, sem passar pelo SGP.
+//            Mesmo pre-requisito de campo (ONU provisionada apontando para o
+//            ACS), mas dispensa cadastrar o Gerenciador de CPE no SGP - e,
+//            como o n8n e o GenieACS rodam na mesma VM, dispensa tambem expor
+//            a NBI na internet, que e o que o caminho pelo SGP obriga (o SGP
+//            e SaaS: quem chamaria a NBI seria a nuvem da TSMX).
+//            Em troca, o mapeamento de parametro por modelo passa a ser nosso:
+//            veja "Montar Tarefa Wifi".
+//   chamado  coleta o que o cliente quer e abre uma ocorrencia no SGP para a
+//            equipe aplicar. Nao automatiza, mas resolve HOJE: do lado do
+//            cliente o atendimento e o mesmo, e a equipe recebe um pedido
+//            estruturado em vez de uma ligacao.
+//   off      tira a opcao do menu.
 //
 // O modo 'chamado' existe porque a alternativa real nao era "esperar o ACS", e
 // sim o cliente ligar para o suporte - o que ja acontece, so que sem registro.
@@ -173,6 +181,44 @@ function formWifi(p) {
     partes.push('nova_senha_5g=' + encodeURIComponent(p.senha));
   }
   return partes.join('&');
+}
+
+// Modo genieacs: a NBI indexa por device, nao por contrato, entao e preciso
+// achar o equipamento do assinante antes de escrever nele. O SGP entrega dois
+// candidatos a chave de juncao no consultacliente: servico_login (o usuario
+// PPPoE) e servico_mac.
+//
+// O caminho do PPPoE no modelo de dados varia entre TR-098 e TR-181 e entre
+// indices de WAN, e nao da para saber qual e o certo antes de ver o primeiro
+// equipamento real do parque. Por isso a busca vai como $or dos dois padroes
+// mais comuns, e GENIEACS_LOGIN_PARAM permite fixar o caminho certo depois
+// que ele for descoberto - o que deixa a busca mais barata e menos ambigua.
+//
+// Ambiguidade aqui e perigosa: escrever Wi-Fi no equipamento errado derruba a
+// casa de outra pessoa. Por isso quem consome esta busca ("Montar Tarefa
+// Wifi") so aplica quando ela devolve EXATAMENTE um device.
+function acsQuery(login, mac) {
+  const ors = [];
+  const l = String(login || '').trim();
+  if (l) {
+    const fixo = String($env.GENIEACS_LOGIN_PARAM || '').trim();
+    const caminhos = fixo ? [fixo] : [
+      'InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANPPPConnection.1.Username',
+      'Device.PPP.Interface.1.Username'];
+    caminhos.forEach(function (c) {
+      const o = {}; o[c + '._value'] = l; ors.push(o);
+    });
+  }
+  // Em boa parte das ONUs o SerialNumber do TR-069 e o MAC (com ou sem ':').
+  // E palpite, mas palpite seguro: se casar com um device diferente do que o
+  // login casou, a busca devolve dois e nada e aplicado.
+  const m = String(mac || '').replace(/[^0-9a-fA-F]/g, '').toUpperCase();
+  if (m.length === 12) {
+    ors.push({ '_deviceId._SerialNumber': m });
+    ors.push({ '_deviceId._SerialNumber': m.match(/.{2}/g).join(':') });
+  }
+  if (!ors.length) return null;
+  return JSON.stringify(ors.length === 1 ? ors[0] : { $or: ors });
 }
 
 // Tela de confirmacao: mostra so o que vai mudar. Repetir o nome atual como se
@@ -436,6 +482,21 @@ switch (step) {
         det.push('Solicitado pelo WhatsApp ' + phone + ', identidade validada.');
         sgp_action = 'abrir_chamado';
         sgp_payload = { contrato: session.contrato, conteudo: det.join('\n') };
+      } else if (WIFI_MODO === 'genieacs') {
+        // Sem chave de juncao nao ha como identificar o equipamento. Parar
+        // aqui e melhor que consultar a NBI sem filtro: uma busca vazia
+        // devolve a base inteira, e num parque com um unico device
+        // provisionado ela devolveria "exatamente um" - o errado.
+        const chave = acsQuery(session.login, session.mac);
+        if (!chave) {
+          reply_text = 'Não consegui identificar seu equipamento para aplicar a ' +
+            'alteração. Vou te transferir para um atendente.';
+          next_step = 'human_handoff';
+        } else {
+          p.acs_query = chave;
+          sgp_action = 'definir_wifi_acs';
+          sgp_payload = p;
+        }
       } else {
         p.form = formWifi(p);
         sgp_action = 'definir_wifi';
@@ -611,6 +672,10 @@ if (contratos.length === 0) {
   // servico_mac casa com o phy_addr da ONU - e o plano B para achar o
   // equipamento quando o filtro por contrato nao retorna nada.
   session_patch.mac = ref.servico_mac || ref.servico_mac2 || '';
+  // Usuario PPPoE: chave de juncao preferida com o GenieACS no modo
+  // 'genieacs', porque e o unico campo que o SGP e o equipamento enxergam
+  // com o mesmo valor. O MAC entra so como segundo candidato.
+  session_patch.login = ref.servico_login || '';
   // Nome atual da rede: usado para o cliente reconhecer de qual Wi-Fi
   // estamos falando. Pode vir vazio - a base nem sempre tem esse campo.
   session_patch.wifi_ssid_atual = ref.servico_wifi_ssid || '';
@@ -690,10 +755,38 @@ session_patch.senha_new = undefined;
 session_patch.ssid_new = undefined;
 session_patch.wifi_alvo = undefined;
 
-// Resposta do SGP: { msg, success }
-const sucesso = !!(resp && resp.success === true);
+const acs = prev.sgp_action === 'definir_wifi_acs';
 const ssidNovo = prev.sgp_payload && prev.sgp_payload.ssid;
 const senhaNova = prev.sgp_payload && prev.sgp_payload.senha;
+
+// Duas origens, duas formas de dizer "deu certo":
+//   cpemanage do SGP -> { msg, success }
+//   NBI do GenieACS  -> 200 quando o roteador aplicou na hora, 202 quando ele
+//                       nao atendeu o connection request e a tarefa ficou na
+//                       fila. 202 nao e erro, mas tambem nao e "pronto".
+let sucesso = false, enfileirado = false, auditoria;
+if (acs) {
+  const status = Number(resp && resp.statusCode);
+  const corpo = (resp && resp.body) || {};
+  const fault = (corpo && corpo.fault) ? corpo.fault : null;
+  sucesso = status === 200 && !fault;
+  enfileirado = status === 202 && !fault;
+  // O corpo que a NBI devolve numa falha ECOA a tarefa - e a tarefa carrega a
+  // senha em claro. O log de auditoria e consultado pela equipe toda, entao
+  // daqui sai so o que serve para diagnosticar.
+  // acs_device_id e acs_redes nascem em "Montar Tarefa Wifi", nao no
+  // Parse & Route. Este node tambem atende o caminho do cpemanage, onde
+  // aquele node nao roda - e referenciar node que nao executou levanta
+  // excecao no n8n, entao a leitura vai protegida.
+  let montado = {};
+  try { montado = $('Montar Tarefa Wifi').first().json || {}; } catch (e) { montado = {}; }
+  auditoria = { via: 'genieacs', device: montado.acs_device_id || null,
+                redes: montado.acs_redes || null, status: status || null,
+                fault: fault ? (fault.detail || fault) : null };
+} else {
+  sucesso = !!(resp && resp.success === true);
+  auditoria = resp;
+}
 
 if (sucesso) {
   // Confirma exatamente o que mudou. Dizer "nome e senha atualizados" para
@@ -701,17 +794,42 @@ if (sucesso) {
   reply_text = 'Pronto! Sua rede Wi-Fi foi atualizada:\n';
   if (ssidNovo) reply_text += '\n*Nome:* ' + ssidNovo;
   if (senhaNova) reply_text += '\n*Senha:* alterada';
-  reply_text += '\n\nO roteador pode levar alguns minutos para aplicar. ';
+  // Pelo cpemanage nao da para saber se a ONU aplicou: o SGP responde success
+  // assim que aceita o pedido. Pela NBI, 200 e o roteador confirmando - e ai
+  // prometer "alguns minutos" seria inventar uma espera que nao existe.
+  reply_text += acs
+    ? '\n\nA alteração já está valendo. '
+    : '\n\nO roteador pode levar alguns minutos para aplicar. ';
   reply_text += senhaNova
     ? 'Seus aparelhos vão precisar conectar de novo com a nova senha.'
     : 'Seus aparelhos devem reconectar sozinhos com a senha de sempre.';
   reply_text += '\n\nDigite *menu* se precisar de mais alguma coisa.';
   next_step = 'menu';
   session_patch.reset = true;
+} else if (enfileirado) {
+  // A tarefa ficou na fila do ACS e roda quando o equipamento se comunicar de
+  // novo. Nao da para cancelar do lado do cliente, entao o minimo e nao deixar
+  // a queda dos aparelhos chegar de surpresa daqui a algumas horas.
+  reply_text = 'Seu roteador não respondeu agora — deve estar desligado ou ' +
+    'sem conexão.\n\nDeixei a alteração agendada: ela vai ser aplicada sozinha ' +
+    'assim que o equipamento voltar a se comunicar';
+  reply_text += senhaNova
+    ? ', e nesse momento os aparelhos da casa vão pedir a senha nova.'
+    : '.';
+  reply_text += '\n\nSe preferir que alguém acompanhe, digite *5*.';
+  next_step = 'menu';
+  session_patch.reset = true;
 } else {
   const msg = (resp && resp.msg) ? String(resp.msg) : '';
   if (/Gerenciador de CPE/i.test(msg)) {
     reply_text = 'Seu roteador não está habilitado para configuração remota. Vou te transferir para um atendente resolver isso.';
+    next_step = 'human_handoff';
+  } else if (acs) {
+    // Falha na NBI e sempre algo que a equipe precisa olhar (parametro que o
+    // modelo recusou, ACS fora do ar). Mandar "tente de novo" so faria o
+    // cliente repetir a mesma falha.
+    reply_text = 'Não consegui aplicar a alteração no seu equipamento. ' +
+      'Sua rede continua como estava. Vou te transferir para um atendente.';
     next_step = 'human_handoff';
   } else {
     reply_text = 'Não consegui aplicar a alteração agora. Tente novamente em alguns minutos ou digite *5* para falar com um atendente.';
@@ -730,10 +848,160 @@ return [{ json: Object.assign({}, prev, {
     contrato: prev.sgp_payload.contrato,
     ssid_novo: prev.sgp_payload.ssid,
     sucesso: sucesso,
-    resposta_sgp: resp,
+    enfileirado: enfileirado || undefined,
+    resposta_sgp: auditoria,
   },
 }) }];
 """
+
+# Modo genieacs: traduz "trocar o Wi-Fi do contrato X" para "escrever estes
+# parametros neste device". E aqui que mora a complexidade que o cpemanage do
+# SGP absorvia por nos - o preco de falar direto com a NBI.
+JS_MONTAR_TAREFA_ACS = r"""
+const prev = $('Parse & Route').first().json;
+const resp = $input.first().json;
+
+const devices = Array.isArray(resp && resp.body) ? resp.body : [];
+const ssid  = (prev.sgp_payload && prev.sgp_payload.ssid)  || null;
+const senha = (prev.sgp_payload && prev.sgp_payload.senha) || null;
+
+function falha(motivo, extra) {
+  return [{ json: Object.assign({}, prev, {
+    acs_device_id: null, acs_task: null,
+    acs_falha: motivo, acs_falha_extra: extra || null,
+  }) }];
+}
+
+// A NBI devolve um array. Zero: o equipamento nao esta provisionado no ACS
+// (nem toda ONU esta, e nunca vai estar - ver README do genieacs). Mais de um:
+// as chaves de juncao apontaram para equipamentos diferentes, e escolher um
+// seria escrever na casa de outra pessoa. Nos dois casos, nao aplica.
+if (devices.length === 0) return falha('device_nao_encontrado');
+if (devices.length > 1) return falha('device_ambiguo', devices.length);
+
+const dev = devices[0];
+
+// Na NBI cada parametro e um objeto {_value, _type, _writable, _timestamp} e
+// as instancias sao chaves numericas.
+function val(no) { return (no && typeof no === 'object') ? no._value : undefined; }
+function ligado(v) { return v === true || v === 1 || /^(1|true)$/i.test(String(v == null ? '' : v)); }
+function escrivel(no) { return !!no && typeof no === 'object' && no._writable !== false; }
+
+const lan = ((dev.InternetGatewayDevice || {}).LANDevice || {})['1'] || {};
+const wlan = lan.WLANConfiguration || {};
+const indices = Object.keys(wlan).filter(function (k) { return /^\d+$/.test(k); })
+  .map(Number).sort(function (a, b) { return a - b; });
+
+// Sem WLANConfiguration no modelo de dados o equipamento pode ser TR-181
+// (Device.WiFi.*, mapeamento diferente e nao suportado aqui) ou simplesmente
+// nunca ter tido a arvore lida pelo ACS. Em nenhum dos dois casos da para
+// escrever as cegas.
+if (!indices.length) return falha('sem_wlanconfiguration');
+
+// 2.4 vs 5 GHz: OperatingFrequencyBand e o campo canonico, mas nem todo
+// firmware expoe. Standard com 'a', 'ac' ou 'ax' e o indicio seguinte.
+function banda(inst) {
+  const f = val(inst.OperatingFrequencyBand);
+  if (f) return /5/.test(String(f)) ? '5' : '2.4';
+  const st = String(val(inst.Standard) || '');
+  if (st) return /(^|,)\s*a[cx]?\s*(,|$)/i.test(st) ? '5' : '2.4';
+  return '';
+}
+
+// So redes LIGADAS entram: rede desligada e quase sempre a de visitantes que
+// o assinante nunca usou, e renomea-la nao ajuda ninguem.
+const ligadas = indices.map(function (n) { return { n: n, inst: wlan[String(n)] || {} }; })
+  .filter(function (a) { return ligado(val(a.inst.Enable)); });
+if (!ligadas.length) return falha('sem_rede_ligada');
+
+// Quando o firmware informa a banda, muda a PRIMEIRA rede de cada banda - que
+// e a rede principal. Quando nao informa, nao da para distinguir a principal
+// da de visitantes, e a escolha conservadora e mudar todas as ligadas: e o
+// mesmo efeito de mandar novo_ssid + novo_ssid_5g pelo cpemanage.
+const temBanda = ligadas.some(function (a) { return banda(a.inst) !== ''; });
+let alvos;
+if (temBanda) {
+  const vistas = {};
+  alvos = ligadas.filter(function (a) {
+    const b = banda(a.inst) || 'indefinida';
+    if (vistas[b]) return false;
+    vistas[b] = true;
+    return true;
+  });
+} else {
+  alvos = ligadas;
+}
+
+// Cada rede escolhida precisa aceitar TUDO que o cliente pediu. Aplicar so no
+// que der deixaria o assinante com 2.4 GHz numa senha e 5 GHz noutra - pior
+// que nao aplicar, porque ele acha que funcionou e liga para o suporte com um
+// sintoma dificil de diagnosticar. Se algum modelo cair aqui, o mapeamento
+// dele precisa ser resolvido antes de ser liberado, nao contornado em silencio.
+const parametros = [];
+for (let i = 0; i < alvos.length; i++) {
+  const a = alvos[i];
+  const c = 'InternetGatewayDevice.LANDevice.1.WLANConfiguration.' + a.n;
+  if (ssid) {
+    if (!escrivel(a.inst.SSID)) return falha('ssid_nao_escrivel', a.n);
+    parametros.push([c + '.SSID', ssid, 'xsd:string']);
+  }
+  if (senha) {
+    // KeyPassphrase e PreSharedKey.1.PreSharedKey convivem e nem todo firmware
+    // aceita os dois; escrever um parametro que o CPE recusa derruba a tarefa
+    // INTEIRA. Por isso so vai o que existe no modelo de dados lido do proprio
+    // equipamento, e quando os dois existem os dois vao com o mesmo valor -
+    // ha modelo que so honra um deles.
+    const psk = (a.inst.PreSharedKey || {})['1'] || {};
+    const temKp = escrivel(a.inst.KeyPassphrase);
+    const temPsk = escrivel(psk.PreSharedKey);
+    if (!temKp && !temPsk) return falha('senha_nao_escrivel', a.n);
+    if (temKp) parametros.push([c + '.KeyPassphrase', senha, 'xsd:string']);
+    if (temPsk) parametros.push([c + '.PreSharedKey.1.PreSharedKey', senha, 'xsd:string']);
+  }
+}
+if (!parametros.length) return falha('nada_a_escrever');
+
+return [{ json: Object.assign({}, prev, {
+  acs_device_id: dev._id,
+  acs_task: { name: 'setParameterValues', parameterValues: parametros },
+  acs_redes: alvos.map(function (a) { return a.n; }),
+  acs_falha: null,
+}) }];
+"""
+
+# Nao aplicou porque nem chegamos a tentar: device ausente, ambiguo ou com um
+# modelo de dados que nao sabemos escrever. Do lado do cliente e tudo a mesma
+# coisa - ninguem mexeu no roteador dele - mas o motivo tem de ficar no log,
+# porque e ele que diz o que corrigir no provisionamento.
+JS_ACS_NAO_APLICOU = r"""
+const prev = $input.first().json;
+
+const session_patch = Object.assign({}, prev.session_patch);
+session_patch.senha_new = undefined;
+session_patch.ssid_new = undefined;
+session_patch.wifi_alvo = undefined;
+
+return [{ json: Object.assign({}, prev, {
+  reply_text: 'Não consegui aplicar a alteração no seu equipamento agora. ' +
+    'Sua rede continua como estava. Vou te transferir para um atendente, ' +
+    'que resolve isso para você.',
+  next_step: 'human_handoff',
+  session_patch: session_patch,
+  _audit: {
+    tipo: 'wifi',
+    phone: prev.phone,
+    cpf: prev.session.cpf,
+    contrato: prev.sgp_payload.contrato,
+    ssid_novo: prev.sgp_payload.ssid,
+    sucesso: false,
+    // Sem senha e sem a tarefa: o log de auditoria e consultado pela equipe
+    // toda, o dado que importa aqui e o motivo.
+    resposta_sgp: { via: 'genieacs', falha: prev.acs_falha,
+                    detalhe: prev.acs_falha_extra || null },
+  },
+}) }];
+"""
+
 
 # ---------------------------------------------------------------- Financeiro
 JS_PROC_FATURA = r"""
@@ -1105,6 +1373,8 @@ nodes = [
          "renameOutput": True, "outputKey": "lookup_cpf"},
         {"conditions": cond("={{ $json.sgp_action }}", "definir_wifi"),
          "renameOutput": True, "outputKey": "definir_wifi"},
+        {"conditions": cond("={{ $json.sgp_action }}", "definir_wifi_acs"),
+         "renameOutput": True, "outputKey": "definir_wifi_acs"},
         {"conditions": cond("={{ $json.sgp_action }}", "abrir_chamado"),
          "renameOutput": True, "outputKey": "abrir_chamado"},
         {"conditions": cond("={{ $json.sgp_action }}", "segunda_via"),
@@ -1151,7 +1421,52 @@ nodes = [
      "id": "http-wifi", "name": "SGP - Definir Wifi",
      "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2, "position": [1000, 0]},
 
-    code_node("code-proc-wifi", "Processar Definir Wifi", JS_PROC_WIFI, [1200, 0]),
+    # ---- Modulo 1b: Wi-Fi direto na NBI do GenieACS (WIFI_MODO=genieacs) ----
+    # Sem projection de proposito: o device doc inteiro e maior, mas a busca
+    # devolve no maximo um equipamento, e restringir campos aqui e a diferenca
+    # entre "nao achei WLANConfiguration porque o modelo nao tem" e "nao achei
+    # porque pedi errado" - dois diagnosticos opostos para o mesmo sintoma.
+    {"parameters": {
+        "method": "GET", "url": "={{ $env.GENIEACS_NBI_URL }}/devices/",
+        "sendQuery": True,
+        "queryParameters": {"parameters": [
+            {"name": "query", "value": "={{ $json.sgp_payload.acs_query }}"}]},
+        "options": {"response": {"response": {"neverError": True, "fullResponse": True}},
+                    "timeout": 20000}},
+     "id": "http-acs-busca", "name": "GenieACS - Buscar Device",
+     "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2, "position": [1000, 120]},
+
+    code_node("code-acs-tarefa", "Montar Tarefa Wifi", JS_MONTAR_TAREFA_ACS, [1200, 120]),
+
+    {"parameters": {
+        "conditions": {"options": {"caseSensitive": True, "leftValue": "", "typeValidation": "loose"},
+                       "conditions": [{"leftValue": "={{ $json.acs_device_id }}", "rightValue": "",
+                                       "operator": {"type": "string", "operation": "notEmpty",
+                                                    "singleValue": True}}],
+                       "combinator": "and"}, "options": {}},
+     "id": "if-acs", "name": "Da para aplicar no ACS?", "type": "n8n-nodes-base.if",
+     "typeVersion": 2.2, "position": [1400, 120]},
+
+    # connection_request faz o ACS acordar o equipamento agora em vez de
+    # esperar o proximo inform periodico - e o que permite responder ao cliente
+    # "ja esta valendo" em vez de "deve aplicar em algum momento". Quando o
+    # roteador nao atende, a NBI responde 202 e a tarefa fica na fila; quem
+    # traduz isso para o cliente e o "Processar Definir Wifi".
+    {"parameters": {
+        "method": "POST",
+        "url": ("={{ $env.GENIEACS_NBI_URL }}/devices/"
+                "{{ encodeURIComponent($json.acs_device_id) }}"
+                "/tasks?connection_request&timeout=20000"),
+        "sendBody": True, "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.acs_task) }}",
+        "options": {"response": {"response": {"neverError": True, "fullResponse": True}},
+                    "timeout": 45000}},
+     "id": "http-acs-aplicar", "name": "GenieACS - Aplicar Wifi",
+     "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2, "position": [1600, 60]},
+
+    code_node("code-acs-falhou", "ACS Nao Aplicou", JS_ACS_NAO_APLICOU, [1600, 200]),
+
+    code_node("code-proc-wifi", "Processar Definir Wifi", JS_PROC_WIFI, [1800, 0]),
 
     # ---- Modulo 2: Financeiro (2a via) ----
     # nao_gerar_os=1: sem isso o SGP abre uma ordem de servico a cada consulta,
@@ -1295,6 +1610,7 @@ connections = {
     "Precisa chamar o SGP?": {"main": [
         to("SGP - Consultar Cliente"),   # lookup_cpf
         to("SGP - Definir Wifi"),        # definir_wifi
+        to("GenieACS - Buscar Device"),  # definir_wifi_acs
         to("SGP - Abrir Chamado"),       # abrir_chamado
         to("SGP - Segunda Via"),         # segunda_via
         to(PERSIST),                     # fallback: so responder
@@ -1319,6 +1635,14 @@ connections = {
     "SGP - Segunda Via": {"main": [to("Processar Segunda Via")]},
     "Processar Segunda Via": {"main": [to(PERSIST)]},
     "SGP - Definir Wifi": {"main": [to("Processar Definir Wifi")]},
+    "GenieACS - Buscar Device": {"main": [to("Montar Tarefa Wifi")]},
+    "Montar Tarefa Wifi": {"main": [to("Da para aplicar no ACS?")]},
+    "Da para aplicar no ACS?": {"main": [
+        to("GenieACS - Aplicar Wifi"),   # true: achou o device e sei o que escrever
+        to("ACS Nao Aplicou"),           # false
+    ]},
+    "GenieACS - Aplicar Wifi": {"main": [to("Processar Definir Wifi")]},
+    "ACS Nao Aplicou": {"main": [to(PERSIST)]},
     "Processar Definir Wifi": {"main": [to(PERSIST)]},
     "SGP - Abrir Chamado": {"main": [to("Processar Chamado")]},
     "Processar Chamado": {"main": [to(PERSIST)]},

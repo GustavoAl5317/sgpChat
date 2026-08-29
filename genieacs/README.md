@@ -145,6 +145,36 @@ eles):
 | `ManagementServer.PeriodicInformInterval` | conforme a política de rede de vocês |
 | `ManagementServer.Username` / `Password` | credencial por equipamento, se o modelo suportar |
 
+Comandos por fabricante, para o time de rede adaptar ao modelo de OLT. Sao
+de referencia da comunidade, **nao verificados contra o manual do equipamento
+de voces** — confira antes de virar perfil aplicado em lote:
+
+```
+# ZTE C3XX / C6XX  (dentro de pon-onu-mng gpon-onu_1/x/x:y)
+tr069-mgmt 1 state unlock
+tr069-mgmt 1 acs acs.rcnet.com.br:7547 validate basic username <user> password <senha>
+tr069-mgmt 1 tag pri 5 vlan <vlan-de-gerencia>
+security-mgmt 999 state enable ingress-type lan protocol tr069
+
+# Huawei MA5600T / MA5800
+ont tr069-server-profile add profile-id 1 profile-name "acs"     url "http://acs.rcnet.com.br:7547" user "<user>" "<senha>"
+ont tr069-server-config pon 0 all profile-id 1
+
+# Fiberhome AN5000 / AN6000
+onu remote-manage-cfg 1 tr069 enable acs-url http://acs.rcnet.com.br:7547     acl-user <user> acl-pswd <senha> inform enable interval 300
+
+# Datacom DM4610
+profile gpon tr069-acs-profile ACS
+ url http://acs.rcnet.com.br:7547
+ username <user>
+ password <senha>
+onu tr069-acs-profile ACS
+```
+
+A ONU precisa alcancar a 7547 pela VLAN de gerencia — se ela nao rotear ate o
+ACS, o equipamento nunca aparece em Devices e o sintoma e identico ao de
+firmware sem TR-069. Confira o caminho antes de suspeitar do equipamento.
+
 **Mesmo indo direto para a base inteira, comece por um grupo pequeno** —
 alguns funcionários ou uma região limitada — antes do rollout completo. Não é
 cautela de piloto por cautela: é a primeira vez que este provisionamento roda
@@ -156,7 +186,75 @@ Em poucos minutos cada equipamento provisionado aparece em **Devices** na
 interface do GenieACS. Se não aparecer, o problema está no caminho
 ONU -> 7547: confira firewall e se a ONU tem TR-069 habilitado no firmware.
 
+## Dois caminhos ate a ONU — escolha um
+
+Depois que o equipamento esta provisionado, ha duas formas de o bot escrever
+nele. O trabalho de campo acima e o mesmo nos dois; muda quem chama a NBI.
+
+| | `WIFI_MODO=acs` | `WIFI_MODO=genieacs` |
+|---|---|---|
+| caminho | bot -> SGP -> NBI -> ONU | bot -> NBI -> ONU |
+| Gerenciador de CPE no SGP | obrigatorio | dispensado |
+| NBI exposta na internet | **obrigatorio** (o SGP e SaaS) | nao |
+| JSON de integracao da TSMX | precisa | nao precisa |
+| mapeamento de parametro por modelo | do SGP | **nosso** |
+| troca pela interface do SGP / Central | funciona | nao |
+
+O modo `genieacs` existe porque o caminho pelo SGP obriga a publicar na
+internet uma API sem autenticacao propria que escreve na configuracao de toda
+a base. O proxy da 7558 torna isso aceitavel, mas nao publicar continua sendo
+melhor que publicar bem. O preco e o mapeamento de parametro: sem o SGP no
+meio, e o bot que precisa saber que parametro cada modelo aceita.
+
+Como ele lida com isso: le o modelo de dados do proprio equipamento e escreve
+so o que existe la. `SSID`, e `KeyPassphrase` e/ou `PreSharedKey.1.PreSharedKey`
+conforme o modelo expuser (ha firmware que so honra um dos dois). Escolhe a
+primeira rede ligada de cada banda quando o firmware informa a banda; todas as
+ligadas quando nao informa.
+
+E, principalmente, **recusa em vez de chutar**. Nao aplica nada quando:
+
+| motivo no log | o que significa |
+|---|---|
+| `device_nao_encontrado` | ONU nao provisionada no ACS — esperado durante o rollout |
+| `device_ambiguo` | login e MAC casaram com equipamentos diferentes |
+| `sem_wlanconfiguration` | modelo TR-181, ou arvore nunca lida pelo ACS |
+| `senha_nao_escrivel` / `ssid_nao_escrivel` | mapeamento do modelo precisa ser resolvido |
+
+Em todos, o assinante ouve que a rede continua como estava e vai para o
+atendente. O motivo fica em `wa_wifi_change_log` — e ele que diz o que
+corrigir no provisionamento. Ver essas recusas no comeco e o desenho
+funcionando, nao falha.
+
+### Ligar o modo direto
+
+```bash
+cd ~/sgpChat/sgpChat
+sed -i 's/^WIFI_MODO=.*/WIFI_MODO=genieacs/' .env
+docker compose up -d          # cria a rede acs_nbi e religa o n8n nela
+cd genieacs && docker compose up -d   # poe o GenieACS na mesma rede
+cd .. && bash configurar-n8n.sh
+```
+
+A ordem importa: a rede `acs_nbi` e criada pelo compose do bot e consumida
+como externa pelo do GenieACS. Confira que o n8n enxerga a NBI:
+
+```bash
+docker exec botsgp-n8n wget -qO- http://genieacs:7557/devices/?query=%7B%7D | head -c 200
+```
+
+Depois de provisionar a primeira ONU, veja como o PPPoE aparece nela e fixe o
+caminho em `GENIEACS_LOGIN_PARAM`:
+
+```bash
+docker exec botsgp-n8n wget -qO- 'http://genieacs:7557/devices/' | grep -o '[A-Za-z.0-9]*Username'
+```
+
 ## Cadastrar no SGP
+
+Necessario apenas para `WIFI_MODO=acs` (e para a troca pela interface do SGP
+e pela Central do Assinante). No modo `genieacs` isto e opcional — da para
+cadastrar depois, sem parar o atendimento.
 
 Sistema -> Gerenciador de CPE -> Adicionar:
 

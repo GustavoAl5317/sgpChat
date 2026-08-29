@@ -72,9 +72,19 @@ services:
       SGP_API_TOKEN: ${SGP_API_TOKEN}
       SGP_APP_NAME: ${SGP_APP_NAME}
       SGP_OCORRENCIA_TIPO: ${SGP_OCORRENCIA_TIPO}
-      # acs | chamado | off - veja o .env.example. Sem Gerenciador de CPE
-      # cadastrado no SGP, 'acs' falha em toda chamada.
+      # acs | genieacs | chamado | off - veja o .env.example. Sem Gerenciador
+      # de CPE cadastrado no SGP, 'acs' falha em toda chamada; 'genieacs'
+      # dispensa esse cadastro e escreve direto na NBI.
       WIFI_MODO: ${WIFI_MODO:-acs}
+      # So usado por WIFI_MODO=genieacs. Aponta para a NBI CRUA (7557), sem
+      # TLS e sem token, porque essa conversa acontece dentro da rede acs_nbi
+      # e nunca chega a um cabo. O nginx da pasta genieacs/ continua existindo
+      # para o outro consumidor da NBI - o SGP, que e SaaS e chega pela
+      # internet. Sao dois caminhos com ameacas diferentes.
+      GENIEACS_NBI_URL: ${GENIEACS_NBI_URL:-http://genieacs:7557}
+      # Opcional: fixa o caminho do usuario PPPoE no modelo de dados, depois
+      # de descoberto no parque. Vazio, o bot tenta TR-098 e TR-181.
+      GENIEACS_LOGIN_PARAM: ${GENIEACS_LOGIN_PARAM:-}
       EVOLUTION_API_URL: http://evolution:8080
       EVOLUTION_INSTANCE: ${EVOLUTION_INSTANCE}
       EVOLUTION_API_KEY: ${EVOLUTION_API_KEY}
@@ -84,7 +94,10 @@ services:
     # que termina o TLS e publica na internet. As rotas do Traefik sao
     # escritas por publicar-no-traefik.sh, nao por labels: o Traefik do
     # EasyPanel roda em Swarm e ignora labels de containers de compose.
-    networks: [botsgp, proxy]
+    # acs_nbi so serve ao modo genieacs: e por ela que o n8n alcanca a NBI.
+    # Entrar numa rede nao publica porta nenhuma - o GenieACS continua sem
+    # expor a 7557 no host.
+    networks: [botsgp, proxy, acs_nbi]
 
   evolution:
     # O projeto migrou de atendai/ para evoapicloud/ (atendai parou no v2.2.3).
@@ -165,3 +178,10 @@ networks:
   proxy:
     external: true
     name: ${TRAEFIK_NETWORK}
+  # Ponte entre este stack e o do GenieACS (pasta genieacs/), que roda em
+  # compose separado. Criada aqui e consumida la como external, entao a ordem
+  # importa: suba este antes daquele. Com WIFI_MODO diferente de 'genieacs'
+  # ela fica criada e sem uso - nao atrapalha nada.
+  acs_nbi:
+    driver: bridge
+    name: acs_nbi

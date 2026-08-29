@@ -64,7 +64,10 @@ services:
       # fala com ela e o nginx abaixo, dentro da rede do compose.
     volumes:
       - genieacs_ext:/opt/genieacs/ext
-    networks: [acs]
+    # acs_nbi entra so quando o bot usa WIFI_MODO=genieacs: e o unico jeito de
+    # o n8n alcancar a NBI sem publica-la no host. Quem entra nela e o
+    # container do GenieACS; o Mongo continua isolado na rede acs.
+    networks: [acs, acs_nbi]
 
   # O SGP da RCNet e SaaS: quem chama a NBI vem da nuvem da TSMX, pela
   # internet. Este proxy e o que torna isso aceitavel - TLS, token no caminho
@@ -91,3 +94,9 @@ volumes:
 networks:
   acs:
     driver: bridge
+  # Criada pelo compose do bot (../docker-compose.yml), nao por este. Se este
+  # stack subir primeiro o docker reclama que ela nao existe - suba o do bot
+  # antes, ou crie na mao:  docker network create acs_nbi
+  acs_nbi:
+    external: true
+    name: acs_nbi
