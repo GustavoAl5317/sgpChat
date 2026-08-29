@@ -16,37 +16,57 @@
 # Uso (no servidor, de dentro de ~/sgpChat/sgpChat):
 #   bash levantar-parque.sh
 #   bash levantar-parque.sh --csv > parque.csv    # uma linha por ONU
+#   bash levantar-parque.sh --de parque.json      # reprocessa sem chamar o SGP
 set -uo pipefail
 cd "$(dirname "$0")"
 
-[[ -f .env ]] || { echo "[x] .env nao encontrado. Rode de dentro de ~/sgpChat/sgpChat"; exit 1; }
-set -a; source .env; set +a
-: "${SGP_API_URL:?falta SGP_API_URL no .env}"
-
 CSV=0
-[[ "${1:-}" == "--csv" ]] && CSV=1
+ARQ=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --csv) CSV=1; shift ;;
+    --de)  ARQ="${2:-}"; shift 2 ;;
+    *) echo "[x] opcao desconhecida: $1"; exit 1 ;;
+  esac
+done
 
-NET=$(docker inspect botsgp-n8n \
-      --format '{{range $k,$v := .NetworkSettings.Networks}}{{$k}} {{end}}' | awk '{print $1}')
+# O JSON vai para arquivo, nao para um pipe, para que o bloco Python abaixo
+# possa vir num heredoc citado. Heredoc citado passa tudo literal - sem ele,
+# uma aspa dentro do Python fecha a string do shell, e o erro que aparece e de
+# sintaxe de Python apontando para um trecho que nao existe no arquivo.
+if [[ -z "$ARQ" ]]; then
+  [[ -f .env ]] || { echo "[x] .env nao encontrado. Rode de dentro de ~/sgpChat/sgpChat"; exit 1; }
+  set -a; source .env; set +a
+  : "${SGP_API_URL:?falta SGP_API_URL no .env}"
 
-[[ $CSV -eq 1 ]] || echo "Consultando $SGP_API_URL ... (a base inteira; pode demorar)"
+  NET=$(docker inspect botsgp-n8n \
+        --format '{{range $k,$v := .NetworkSettings.Networks}}{{$k}} {{end}}' | awk '{print $1}')
 
-# Sem filtro: queremos o parque todo, nao um contrato. O endpoint aceita e
-# devolve o array completo.
-RESP=$(docker run --rm --network "$NET" curlimages/curl:latest -s -m 180 \
-  -G "${SGP_API_URL}/api/fttx/onu/list/" \
-  --data-urlencode "token=${SGP_API_TOKEN}" \
-  --data-urlencode "app=${SGP_APP_NAME}")
+  ARQ=$(mktemp) || exit 1
+  trap 'rm -f "$ARQ"' EXIT
 
-printf '%s' "$RESP" | CSV=$CSV python3 -c '
+  [[ $CSV -eq 1 ]] || echo "Consultando $SGP_API_URL ... (a base inteira; pode demorar)"
+
+  # Sem filtro: queremos o parque todo, nao um contrato.
+  docker run --rm --network "$NET" curlimages/curl:latest -s -m 300 \
+    -G "${SGP_API_URL}/api/fttx/onu/list/" \
+    --data-urlencode "token=${SGP_API_TOKEN}" \
+    --data-urlencode "app=${SGP_APP_NAME}" > "$ARQ"
+fi
+
+CSV=$CSV ARQ="$ARQ" python3 - <<'FIM_PY'
 import json, os, sys, collections
 
 csv = os.environ.get("CSV") == "1"
+caminho = os.environ["ARQ"]
+
+bruto = open(caminho, encoding="utf-8", errors="replace").read()
 try:
-    onus = json.load(sys.stdin)
+    onus = json.loads(bruto)
 except Exception:
-    sys.stderr.write("[x] resposta do SGP nao e JSON. Confira token/app:\n")
-    sys.stderr.write(sys.stdin.read()[:400] + "\n")
+    sys.stderr.write("[x] a resposta do SGP nao e JSON. Confira token/app.\n")
+    sys.stderr.write("    primeiros 400 caracteres:\n")
+    sys.stderr.write("    " + bruto[:400].replace("\n", "\n    ") + "\n")
     raise SystemExit(1)
 
 if isinstance(onus, dict):
@@ -58,23 +78,29 @@ if not onus:
     raise SystemExit(0)
 
 if csv:
+    ASPA = chr(34)
     campos = ("olt_name", "type", "mode", "phy_addr", "service_contrato")
     print("olt,modelo,modo,serial,contrato")
     for o in onus:
         linha = []
         for k in campos:
-            v = str(o.get(k) if o.get(k) is not None else "")
+            v = o.get(k)
+            v = "" if v is None else str(v)
             # Nome de OLT com virgula quebraria a coluna seguinte.
-            linha.append('"' + v.replace('"', '""') + '"' if "," in v or '"' in v else v)
+            if "," in v or ASPA in v:
+                v = ASPA + v.replace(ASPA, ASPA + ASPA) + ASPA
+            linha.append(v)
         print(",".join(linha))
     raise SystemExit(0)
 
-# O prefixo do phy_addr e o vendor ID do GPON: ZTEG=ZTE, HWTC=Huawei,
-# FHTT=Fiberhome, CMSZ/GPON=varios. E mais confiavel que o nome que o
-# provedor deu a OLT, que costuma ser apelido interno.
+# O prefixo do phy_addr e o vendor ID do GPON. E mais confiavel que o nome que
+# o provedor deu a OLT (apelido interno) e que o campo "type", que costuma ser
+# o nome do onu-type configurado - um perfil generico batizado com o nome de um
+# modelo e aplicado a equipamentos de marcas diferentes.
 VENDOR = {"ZTEG": "ZTE", "HWTC": "Huawei", "FHTT": "Fiberhome", "CXNK": "Nokia",
           "DTMK": "Datacom", "PARK": "Parks", "ALCL": "Nokia/ALU",
-          "TPLG": "TP-Link", "INTB": "Intelbras", "RTKG": "Realtek"}
+          "TPLG": "TP-Link", "INTB": "Intelbras", "RTKG": "Realtek",
+          "CMSZ": "Chima", "GPON": "generico"}
 
 def conta(campo, transform=None):
     c = collections.Counter()
@@ -84,7 +110,8 @@ def conta(campo, transform=None):
     return c
 
 def bloco(titulo, contador, nota=None):
-    print("\n" + titulo)
+    print("")
+    print(titulo)
     print("-" * len(titulo))
     total = sum(contador.values())
     for k, n in contador.most_common(20):
@@ -94,27 +121,35 @@ def bloco(titulo, contador, nota=None):
     if nota:
         print("  " + nota)
 
-print("\n%d ONUs na base." % len(onus))
+def marca(v):
+    if v == "(vazio)":
+        return "(sem serial)"
+    p = str(v)[:4].upper()
+    return VENDOR.get(p, "desconhecido: " + p)
+
+print("")
+print("%d ONUs na base." % len(onus))
 
 bloco("OLTs", conta("olt_name"))
-bloco("Fabricante (pelo prefixo do serial GPON)",
-      conta("phy_addr", lambda v: "(sem serial)" if v == "(vazio)"
-            else VENDOR.get(str(v)[:4].upper(), "desconhecido: " + str(v)[:4].upper())))
-bloco("Modelos de ONU", conta("type"),
-      "^ o modelo decide se ha TR-069 no firmware. Confira os 3-4 primeiros.")
+bloco("Fabricante (pelo prefixo do serial GPON)", conta("phy_addr", marca))
+bloco("onu-type configurado na OLT", conta("type"),
+      "^ compare com o bloco acima: se divergir, 'type' e so rotulo de perfil.")
 
 modos = conta("mode")
 bloco("Modo de conexao", modos)
 
 bridge = sum(n for m, n in modos.items() if "bridge" in str(m).lower())
 if bridge:
-    print("\n  >> %d ONUs em bridge (%.1f%% da base)." % (bridge, 100.0 * bridge / len(onus)))
+    print("")
+    print("  >> %d ONUs em bridge (%.1f%% da base)." % (bridge, 100.0 * bridge / len(onus)))
     print("     Nesses contratos o Wi-Fi e do roteador do cliente, fora do")
     print("     alcance do ACS. Mantenha-os no atendimento por chamado.")
 else:
-    print("\n  >> Nenhuma ONU marcada como bridge neste campo. Bom sinal, mas")
+    print("")
+    print("  >> Nenhuma ONU marcada como bridge neste campo. Bom sinal, mas")
     print("     confirme numa ONU real: nem todo SGP preenche esse campo.")
 
-print("\nProximo passo: escolha UMA ONU de alguem da equipe, num modelo dos mais")
+print("")
+print("Proximo passo: escolha UMA ONU de alguem da equipe, num modelo dos mais")
 print("comuns acima, e provisione so ela por serial - nunca por perfil.")
-'
+FIM_PY
