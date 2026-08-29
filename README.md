@@ -225,6 +225,7 @@ para a internet.
 | [build-workflow.py](build-workflow.py) | **Gera** o JSON do workflow |
 | [n8n/workflow-wifi-selfservice.json](n8n/workflow-wifi-selfservice.json) | Workflow (gerado — não edite à mão) |
 | [test-fluxo.js](test-fluxo.js) | Testa a máquina de estados |
+| [levantar-parque.sh](levantar-parque.sh) | Inventário de ONUs (OLT, modelo, bridge) pelo SGP |
 
 ### Mexendo no fluxo
 
