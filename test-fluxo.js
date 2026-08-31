@@ -838,6 +838,46 @@ rvo = turn(svo, 'Rede Com Espaco', PHONE_OK);
 check(rvo.step === 'awaiting_wifi_confirm', 'no modo chamado, nome com espaco continua valendo');
 ENV = { WIFI_MODO: 'olt' };
 
+// ============ So a senha (WIFI_PERMITE_NOME=false) ============
+// Pela OLT o comando nao aceita espaco no nome da rede - e nome de Wi-Fi com
+// espaco e o que a maioria das pessoas escreve. Em vez de obrigar todo mundo a
+// hifenizar, o provedor pode oferecer so a troca de senha, que e o pedidoSenha mais
+// comum e nao tem essa restricao.
+console.log('\n=== So a senha ===');
+ENV = { WIFI_MODO: 'olt', WIFI_PERMITE_NOME: 'false' };
+
+let ts = turn(null, 'oi', PHONE_OK);
+check(/Alterar a senha do Wi-Fi/.test(ts.reply), 'menu oferece so a senha');
+check(!/nome\/senha/.test(ts.reply), 'menu nao promete o que nao faz');
+
+// A pergunta "o que voce quer alterar" deixa de existir: nao ha escolha.
+let as = ateIdentidade('1', PHONE_OK);
+check(as.t.step === 'awaiting_password', 'apos identidade vai direto para a senha');
+check(!/Só o nome/.test(as.t.reply || ''), 'nao pergunta o que alterar');
+check(/senha/i.test(as.t.reply || ''), 'pede a senha');
+
+let rs = turn(as.s, 'SenhaNova123', PHONE_OK);
+check(rs.step === 'awaiting_wifi_confirm', 'pede confirmacao');
+check(/Nova senha/.test(rs.reply), 'confirmacao mostra a senha');
+check(!/Novo nome/.test(rs.reply), 'confirmacao nao menciona nome');
+
+let pedidoSenha = null;
+rs = turn(rs.sessionRow, '1', PHONE_OK, null, null, null,
+          function (pp) { pedidoSenha = pp; }, null,
+          { lista: UMA_ONU, aplicar: APLICOU_OLT });
+check(pedidoSenha && pedidoSenha.senha === 'SenhaNova123', 'o pedido leva a senha');
+check(pedidoSenha && !pedidoSenha.ssid, 'o pedido NAO leva nome - nada de renomear sem alguem pedir');
+check(/Senha:/.test(rs.reply) && !/Nome:/.test(rs.reply),
+      'sucesso fala so da senha');
+
+// Sem a variavel, o comportamento e o de sempre
+ENV = { WIFI_MODO: 'olt' };
+ts = turn(null, 'oi', PHONE_OK);
+check(/Alterar nome\/senha do Wi-Fi/.test(ts.reply),
+      'sem a variavel, a troca de nome continua no menu');
+as = ateIdentidade('1', PHONE_OK);
+check(as.t.step === 'awaiting_wifi_what', 'sem a variavel, ainda pergunta o que alterar');
+
 ENV = {};
 td = turn(null, 'oi', PHONE_OK);
 check(/Alterar nome\/senha do Wi-Fi/.test(td.reply), 'sem a variavel, o padrao e aplicar pelo ACS');

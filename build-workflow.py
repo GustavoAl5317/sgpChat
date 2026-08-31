@@ -125,8 +125,16 @@ function normDate(v) {
 const WIFI_MODO = String($env.WIFI_MODO || 'acs').trim().toLowerCase();
 const WIFI_ON = WIFI_MODO !== 'off';
 
+// Trocar o NOME da rede so faz sentido onde o caminho de aplicacao aceita o que
+// as pessoas escrevem. Pela OLT o comando nao aceita espaco no nome - e nome de
+// Wi-Fi com espaco e exatamente o que a maioria digita. Em vez de obrigar todo
+// mundo a hifenizar, da para oferecer so a troca de senha, que e o pedido mais
+// comum e nao tem essa restricao.
+const WIFI_NOME_ON = String($env.WIFI_PERMITE_NOME || 'true').trim().toLowerCase() !== 'false';
+
 const MENU = 'Olá! Sou o atendimento automático.\n\n' +
-  (WIFI_ON ? '*1* - Alterar nome/senha do Wi-Fi\n' : '') +
+  (WIFI_ON ? (WIFI_NOME_ON ? '*1* - Alterar nome/senha do Wi-Fi\n'
+                           : '*1* - Alterar a senha do Wi-Fi\n') : '') +
   '*2* - 2ª via de boleto\n' +
   '*3* - Abrir chamado de suporte\n' +
   '*4* - Diagnóstico da minha conexão\n' +
@@ -316,6 +324,13 @@ function aposIdentidade(intent, s) {
   if (intent === 'diagnostico') {
     return { sgp_action: 'diagnostico', next_step: 'menu', reply_text: null,
              sgp_payload: { contrato: s.contrato, mac: s.mac || '' } };
+  }
+  // Sem troca de nome nao ha o que perguntar: pula direto para a senha.
+  if (!WIFI_NOME_ON) {
+    return { sgp_action: 'none', next_step: 'awaiting_password', sgp_payload: {},
+             reply_text: 'Envie a nova senha do Wi-Fi, de 8 a 63 caracteres, sem espaços ou acentos.\n' +
+             '_Anote onde conseguir consultar: todo aparelho da casa vai precisar ' +
+             'dela para voltar a conectar._' };
   }
   return { sgp_action: 'none', next_step: 'awaiting_wifi_what', sgp_payload: {},
            reply_text: promptAlvoWifi(s.wifi_ssid_atual) };
@@ -512,7 +527,7 @@ switch (step) {
     if (text === '1') {
       // So viaja o que o cliente pediu para mudar: campo em branco no
       // cpemanage nao e "manter", e "apagar".
-      const alvo = session.wifi_alvo || 'ambos';
+      const alvo = WIFI_NOME_ON ? (session.wifi_alvo || 'ambos') : 'senha';
       const p = { contrato: session.contrato,
                   ssid:  alvo === 'senha' ? null : (session.ssid_new || null),
                   senha: alvo === 'nome'  ? null : (session.senha_new || null) };
@@ -680,6 +695,9 @@ function confirmarWifi(ssid, senha, modo) {
   return t + 'Digite *1* para confirmar ou *2* para cancelar.';
 }
 
+// Este node roda separado do Parse & Route e nao enxerga as constantes de la.
+const WIFI_NOME_ON = String($env.WIFI_PERMITE_NOME || 'true').trim().toLowerCase() !== 'false';
+
 function aposIdentidade(it, contrato, mac, ssidAtual) {
   if (it === 'financeiro') {
     return { sgp_action: 'segunda_via', next_step: 'menu', reply_text: null,
@@ -692,6 +710,12 @@ function aposIdentidade(it, contrato, mac, ssidAtual) {
   if (it === 'suporte') {
     return { sgp_action: 'none', next_step: 'awaiting_support_desc', sgp_payload: {},
              reply_text: 'Descreva o problema que você está enfrentando (em uma mensagem):' };
+  }
+  if (!WIFI_NOME_ON) {
+    return { sgp_action: 'none', next_step: 'awaiting_password', sgp_payload: {},
+             reply_text: 'Envie a nova senha do Wi-Fi, de 8 a 63 caracteres, sem espaços ou acentos.\n' +
+             '_Anote onde conseguir consultar: todo aparelho da casa vai precisar ' +
+             'dela para voltar a conectar._' };
   }
   return { sgp_action: 'none', next_step: 'awaiting_wifi_what', sgp_payload: {},
            reply_text: promptAlvoWifi(ssidAtual) };
