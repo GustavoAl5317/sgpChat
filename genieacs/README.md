@@ -67,6 +67,16 @@ Portas e quem fala com cada uma:
 
 ## Subir
 
+A rede `acs_nbi` (por onde o bot alcanca a NBI) e declarada como externa aqui e
+criada pelo compose do bot. Criar antes torna este stack independente da ordem:
+
+```bash
+docker network create acs_nbi 2>/dev/null || true
+```
+
+Sem isso, subir este stack primeiro falha com `network acs_nbi not found` — e,
+pior, deixa os containers parados em vez de manter o que estava rodando.
+
 ```bash
 cd genieacs
 cp .env.example .env
