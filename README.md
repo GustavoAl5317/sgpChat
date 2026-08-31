@@ -226,6 +226,7 @@ para a internet.
 | [n8n/workflow-wifi-selfservice.json](n8n/workflow-wifi-selfservice.json) | Workflow (gerado — não edite à mão) |
 | [test-fluxo.js](test-fluxo.js) | Testa a máquina de estados |
 | [levantar-parque.sh](levantar-parque.sh) | Inventário de ONUs (OLT, modelo, bridge) pelo SGP |
+| [docs/provisionar-onu-tr069.md](docs/provisionar-onu-tr069.md) | Passo a passo de campo: apontar uma ONU para o ACS |
 
 ### Mexendo no fluxo
 
