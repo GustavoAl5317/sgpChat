@@ -76,6 +76,10 @@ services:
       # de CPE cadastrado no SGP, 'acs' falha em toda chamada; 'genieacs'
       # dispensa esse cadastro e escreve direto na NBI.
       WIFI_MODO: ${WIFI_MODO:-acs}
+      # false tira a troca de NOME do menu e deixa so a de senha. Existe porque
+      # o comando de SSID da OLT nao aceita espaco, e nome de Wi-Fi com espaco e
+      # o que a maioria digita.
+      WIFI_PERMITE_NOME: ${WIFI_PERMITE_NOME:-true}
       # So usado por WIFI_MODO=genieacs. Aponta para a NBI CRUA (7557), sem
       # TLS e sem token, porque essa conversa acontece dentro da rede acs_nbi
       # e nunca chega a um cabo. O nginx da pasta genieacs/ continua existindo
