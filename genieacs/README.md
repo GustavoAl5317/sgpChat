@@ -84,8 +84,11 @@ que criar o usuário.
 Confira que os serviços responderam:
 
 ```bash
-curl -s -o /dev/null -w 'NBI %{http_code}\n' http://localhost:7557/devices
-curl -s -o /dev/null -w 'UI  %{http_code}\n' http://localhost:3000/
+# A 7557 nao e publicada no host: quem alcanca a NBI e o nginx, por dentro da
+# rede do compose. Consultar localhost:7557 daqui volta vazio e parece "sem
+# devices" quando na verdade e "ninguem atende nessa porta".
+docker exec genieacs-nginx wget -qO- 'http://genieacs:7557/devices/?projection=_id'
+curl -s -o /dev/null -w 'UI %{http_code}' http://127.0.0.1:3001/; echo
 ```
 
 ### Certificado TLS — real, não autoassinado

@@ -56,9 +56,18 @@ services:
       - "7567:7567"
       # 3001->3000 UI: interface web, so para a equipe. A 3000 do host ja
       # estava em uso por outro servico nesta VM (confirmado em producao,
-      # 2026-08-12), por isso o remapeamento. Feche no firewall para os IPs
-      # de voces - ela tem login, mas nao precisa estar aberta ao mundo.
-      - "3001:3000"
+      # 2026-08-12), por isso o remapeamento.
+      #
+      # Presa no 127.0.0.1 porque "feche no firewall" NAO funciona aqui: porta
+      # publicada pelo Docker nao passa pelo ufw. O Docker escreve DNAT na
+      # cadeia DOCKER, percorrida no FORWARD, enquanto as regras do ufw ficam
+      # no INPUT - o trafego desvia. Verificado em producao em 31/08/2026: o
+      # ufw nao liberava a 3001 e mesmo assim havia login de admin vindo de IP
+      # externo no log do GenieACS.
+      #
+      # Este painel controla o roteador de cada assinante. Para acessar, tunel
+      # SSH:  ssh -L 3001:localhost:3001 root@<ip-do-servidor>
+      - "127.0.0.1:3001:3000"
       # A 7557 (NBI) NAO e publicada de proposito: sem autenticacao propria,
       # quem alcanca a porta escreve na config de todos os roteadores. Quem
       # fala com ela e o nginx abaixo, dentro da rede do compose.
