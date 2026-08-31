@@ -59,7 +59,7 @@ function inbound(text, phone) {
 // `espiar` recebe o sgp_payload montado, para os testes conferirem o corpo que
 // sairia para o SGP - o node de HTTP nao roda aqui, entao e o unico ponto onde
 // da para verificar que campo nenhum viaja vazio.
-function turn(sessionRow, text, phone, sgpResponse, faturas, diag, espiar, acs) {
+function turn(sessionRow, text, phone, sgpResponse, faturas, diag, espiar, acs, olt) {
   let montado = null;
   const inb = inbound(text, phone);
   if (!inb) return { skipped: true, sessionRow };
@@ -79,6 +79,16 @@ function turn(sessionRow, text, phone, sgpResponse, faturas, diag, espiar, acs) 
     r = run('Processar Segunda Via', [faturas || sgpResponse], { 'Parse & Route': r });
   } else if (r.sgp_action === 'abrir_chamado') {
     r = run('Processar Chamado', [sgpResponse], { 'Parse & Route': r });
+  } else if (r.sgp_action === 'definir_wifi_olt') {
+    // Caminho da OLT: achar a ONU no SGP -> montar o endereco -> aplicar.
+    montado = run('Montar Troca na OLT', [(olt && olt.lista) || []], { 'Parse & Route': r });
+    if (!montado.olt_onu) {
+      r = run('OLT Nao Aplicou', [montado], {});
+    } else {
+      r = run('Processar Definir Wifi',
+              [(olt && olt.aplicar) || { statusCode: 200, body: { ok: true } }],
+              { 'Parse & Route': r, 'Montar Troca na OLT': montado });
+    }
   } else if (r.sgp_action === 'definir_wifi_acs') {
     // Caminho da NBI: buscar o device -> montar a tarefa -> aplicar. O IF
     // "Da para aplicar no ACS?" e reproduzido aqui pelo teste de acs_device_id.
@@ -706,6 +716,127 @@ check(rx.step === 'human_handoff', 'fault do equipamento -> atendente, nao "tent
 check(!/SenhaNova123/.test(JSON.stringify(rx.audit)),
       'eco da tarefa na falha nao leva a senha para o log');
 check(rx.audit.resposta_sgp.fault.faultCode === '9005', 'o faultCode fica no log');
+
+// ================= Wi-Fi pela OLT (WIFI_MODO=olt) =================
+// O caminho que funcionou em campo: a OLT escreve na ONU por OMCI, sem ACS.
+// O que muda aqui em relacao aos outros modos e que o nome e a senha terminam
+// numa linha de comando de switch - entao a validacao e mais estrita, e achar
+// a ONU errada significa escrever no equipamento de outra pessoa.
+console.log('\n=== Wi-Fi pela OLT ===');
+ENV = { WIFI_MODO: 'olt' };
+
+// Estrutura real do /api/fttx/onu/list/ (capturada do SGP do provedor).
+function onuOlt(slot, pon, onuid, phy) {
+  return { id: 451, olt_id: 2, olt_name: 'OLT ZTE', slot: slot, pon: pon,
+           onuid: onuid, type: 'F670L', mode: 'PPPoE',
+           phy_addr: phy || 'ZTEGDA11A47B', service_contrato: 999 };
+}
+const UMA_ONU = [onuOlt(2, 2, 1)];
+const APLICOU_OLT = { statusCode: 200, body: { ok: true } };
+
+function ateConfirmarOlt(alvo, valores) {
+  const a = ateIdentidade('1', PHONE_OK);
+  let ss = turn(a.s, alvo, PHONE_OK).sessionRow;
+  valores.forEach(function (v) { ss = turn(ss, v, PHONE_OK).sessionRow; });
+  return ss;
+}
+
+let so = ateConfirmarOlt('3', ['RedeNova', 'SenhaNova123']);
+let ro = turn(so, '1', PHONE_OK, null, null, null, null, null,
+              { lista: UMA_ONU, aplicar: APLICOU_OLT });
+check(ro.montado.olt_onu === 'gpon_onu-1/2/2:1',
+      'slot/pon/onu do SGP viram o endereco da OLT');
+check(/Pronto!/.test(ro.reply), 'aplicou pela OLT -> confirma para o cliente');
+check(/já está valendo/.test(ro.reply),
+      'pela OLT nao promete espera: a OLT confirma na hora');
+check(ro.step === 'menu', 'volta ao menu depois de aplicar');
+check(!/SenhaNova123/.test(JSON.stringify(ro.audit)),
+      'senha nao vai para o log de auditoria');
+check(ro.audit.resposta_sgp.via === 'olt' && ro.audit.resposta_sgp.onu === 'gpon_onu-1/2/2:1',
+      'auditoria registra a via e a ONU');
+
+// Outra posicao na OLT tem de virar outro endereco - se isto quebrar, o bot
+// escreve na ONU errada e ninguem percebe ate o cliente reclamar.
+so = ateConfirmarOlt('1', ['OutroNome']);
+ro = turn(so, '1', PHONE_OK, null, null, null, null, null,
+          { lista: [onuOlt(4, 8, 27)], aplicar: APLICOU_OLT });
+check(ro.montado.olt_onu === 'gpon_onu-1/4/8:27', 'monta o endereco de outra posicao');
+
+// --------- Os casos em que NAO se escreve ---------
+so = ateConfirmarOlt('3', ['RedeNova', 'SenhaNova123']);
+let rfo = turn(so, '1', PHONE_OK, null, null, null, null, null, { lista: [] });
+check(rfo.step === 'human_handoff', 'contrato sem ONU no SGP -> atendente');
+check(/continua como estava/.test(rfo.reply), 'diz que a rede nao foi mexida');
+check(rfo.audit.resposta_sgp.falha === 'onu_nao_encontrada', 'motivo fica no log');
+
+// Duas ONUs e nenhuma casa com o MAC do contrato. O modulo de diagnostico pega
+// a primeira nesse caso - pode, porque so le. Aqui escreveria na casa errada.
+so = ateConfirmarOlt('3', ['RedeNova', 'SenhaNova123']);
+rfo = turn(so, '1', PHONE_OK, null, null, null, null, null,
+          { lista: [onuOlt(2, 2, 1, 'ZTEGAAAA1111'), onuOlt(2, 2, 2, 'ZTEGBBBB2222')] });
+check(rfo.step === 'human_handoff' && rfo.audit.resposta_sgp.falha === 'onu_ambigua',
+      'duas ONUs sem desempate -> nao escolhe nenhuma');
+
+// Com o MAC do contrato batendo, o desempate e legitimo
+const macDoContrato = String(ativos[0].servico_mac || '').replace(/[^a-zA-Z0-9]/g, '');
+if (macDoContrato) {
+  so = ateConfirmarOlt('1', ['NomeNovo']);
+  ro = turn(so, '1', PHONE_OK, null, null, null, null, null,
+            { lista: [onuOlt(2, 2, 1, 'ZTEGAAAA1111'), onuOlt(3, 5, 9, macDoContrato)],
+              aplicar: APLICOU_OLT });
+  check(ro.montado && ro.montado.olt_onu === 'gpon_onu-1/3/5:9',
+        'MAC do contrato desempata entre duas ONUs');
+}
+
+// Cadastro incompleto no SGP nao pode virar endereco pela metade
+so = ateConfirmarOlt('3', ['RedeNova', 'SenhaNova123']);
+rfo = turn(so, '1', PHONE_OK, null, null, null, null, null,
+          { lista: [{ id: 1, olt_name: 'OLT ZTE', slot: 2, pon: null, onuid: 1 }] });
+check(rfo.audit.resposta_sgp.falha === 'porta_incompleta',
+      'slot/pon/onu faltando -> nao monta endereco torto');
+
+// A OLT recusou o comando
+so = ateConfirmarOlt('3', ['RedeNova', 'SenhaNova123']);
+rfo = turn(so, '1', PHONE_OK, null, null, null, null, null,
+          { lista: UMA_ONU,
+            aplicar: { statusCode: 502, body: { ok: false, detalhe: '%Error 223845: UNI does not exist.' } } });
+check(rfo.step === 'human_handoff', 'OLT recusou -> atendente, nao "tente de novo"');
+check(/UNI does not exist/.test(JSON.stringify(rfo.audit)), 'o erro da OLT fica no log');
+
+// --------- Validacao mais estrita neste modo ---------
+// O que o cliente digita vai para uma linha de comando de switch. Recusar na
+// digitacao e melhor que aceitar e falhar depois da confirmacao.
+console.log('\n--- validacao no modo olt ---');
+let vo = ateIdentidade('1', PHONE_OK);
+// '3' = nome e senha, para o fluxo passar pelas duas validacoes
+let svo = turn(vo.s, '3', PHONE_OK).sessionRow;
+
+let rvo = turn(svo, 'Rede Com Espaco', PHONE_OK);
+check(rvo.step === 'awaiting_ssid' && /espaços/.test(rvo.reply),
+      'nome com espaco e recusado, com explicacao');
+rvo = turn(svo, 'RedeComAcento' + 'ç', PHONE_OK);
+check(rvo.step === 'awaiting_ssid', 'nome com acento e recusado');
+rvo = turn(svo, 'Rede?', PHONE_OK);
+check(rvo.step === 'awaiting_ssid', 'nome com ? e recusado (abre ajuda no CLI da OLT)');
+rvo = turn(svo, 'Casa-do-Joao', PHONE_OK);
+check(rvo.step === 'awaiting_password', 'nome com hifen e aceito');
+
+svo = turn(svo, 'RedeBoa', PHONE_OK).sessionRow;
+rvo = turn(svo, 'Senha Com Espaco', PHONE_OK);
+check(rvo.step === 'awaiting_password' && /espaços/.test(rvo.reply), 'senha com espaco e recusada');
+rvo = turn(svo, 'Senha?123', PHONE_OK);
+check(rvo.step === 'awaiting_password', 'senha com ? e recusada');
+rvo = turn(svo, 'SenhaBoa123', PHONE_OK);
+check(rvo.step === 'awaiting_wifi_confirm', 'senha comum e aceita');
+
+// E nos outros modos a regra estrita NAO vale - quem usa o cpemanage ou o ACS
+// pode ter espaco no nome, e tirar isso seria piorar o que ja funciona.
+ENV = { WIFI_MODO: 'chamado' };
+v = ateIdentidade('1', PHONE_OK);
+svo = turn(vo.s, '1', PHONE_OK).sessionRow;
+rvo = turn(svo, 'Rede Com Espaco', PHONE_OK);
+check(rvo.step === 'awaiting_wifi_confirm', 'no modo chamado, nome com espaco continua valendo');
+ENV = { WIFI_MODO: 'olt' };
 
 ENV = {};
 td = turn(null, 'oi', PHONE_OK);

@@ -85,6 +85,13 @@ services:
       # Opcional: fixa o caminho do usuario PPPoE no modelo de dados, depois
       # de descoberto no parque. Vazio, o bot tenta TR-098 e TR-181.
       GENIEACS_LOGIN_PARAM: ${GENIEACS_LOGIN_PARAM:-}
+      # WIFI_MODO=olt. O n8n nao tem a credencial da OLT - ele pede ao servico
+      # olt-wifi, que e quem a guarda e quem monta os comandos.
+      OLT_WIFI_URL: ${OLT_WIFI_URL:-http://olt-wifi:8080}
+      OLT_WIFI_TOKEN: ${OLT_WIFI_TOKEN:-}
+      # Chassi da OLT no endereco gpon_onu-<chassi>/<slot>/<pon>:<onu>. E 1 nas
+      # OLTs de prateleira unica.
+      OLT_SHELF: ${OLT_SHELF:-1}
       EVOLUTION_API_URL: http://evolution:8080
       EVOLUTION_INSTANCE: ${EVOLUTION_INSTANCE}
       EVOLUTION_API_KEY: ${EVOLUTION_API_KEY}
@@ -98,6 +105,31 @@ services:
     # Entrar numa rede nao publica porta nenhuma - o GenieACS continua sem
     # expor a 7557 no host.
     networks: [botsgp, proxy, acs_nbi]
+
+  # Unico lugar do stack que guarda a credencial da OLT. Existe para que o n8n
+  # nao a tenha: o n8n conversa com o publico pelo WhatsApp, e um comprometimento
+  # dele nao pode virar controle da rede inteira do provedor. Aqui o bot so
+  # consegue pedir "troque o Wi-Fi desta ONU" - os comandos sao montados dentro
+  # do servico, a partir de campos validados.
+  #
+  # So sobe com WIFI_MODO=olt. Nos outros modos fica parado sem atrapalhar.
+  olt-wifi:
+    build: ./olt-wifi
+    container_name: botsgp-olt-wifi
+    restart: unless-stopped
+    mem_limit: 128m
+    environment:
+      OLT_HOST: ${OLT_HOST:-}
+      OLT_PORT: ${OLT_PORT:-22}
+      OLT_USER: ${OLT_USER:-}
+      OLT_PASS: ${OLT_PASS:-}
+      OLT_WIFI_TOKEN: ${OLT_WIFI_TOKEN:-}
+      # Indices de SSID por banda. Confirmado em campo: 1-4 sao 2.4 GHz e 5-8
+      # sao 5 GHz nas ONUs ZTE. Muda por modelo, entao e configuravel.
+      OLT_WIFI_IF_24: ${OLT_WIFI_IF_24:-wifi_0/1}
+      OLT_WIFI_IF_5G: ${OLT_WIFI_IF_5G:-wifi_0/5}
+    # Sem "ports:": quem alcanca este servico e o n8n, pela rede interna.
+    networks: [botsgp]
 
   evolution:
     # O projeto migrou de atendai/ para evoapicloud/ (atendai parou no v2.2.3).

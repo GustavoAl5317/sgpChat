@@ -228,6 +228,7 @@ para a internet.
 | [levantar-parque.sh](levantar-parque.sh) | Inventário de ONUs (OLT, modelo, bridge) pelo SGP |
 | [docs/provisionar-onu-tr069.md](docs/provisionar-onu-tr069.md) | Passo a passo de campo: apontar uma ONU para o ACS |
 | [docs/estado-troca-wifi.md](docs/estado-troca-wifi.md) | **Estado de campo** — o que funciona, o que travou, o que mudou em produção |
+| [olt-wifi/](olt-wifi/) | Serviço que aplica o Wi-Fi na OLT — guarda a credencial que o bot não tem |
 
 ### Mexendo no fluxo
 

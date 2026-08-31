@@ -107,6 +107,13 @@ function normDate(v) {
 //            e SaaS: quem chamaria a NBI seria a nuvem da TSMX).
 //            Em troca, o mapeamento de parametro por modelo passa a ser nosso:
 //            veja "Montar Tarefa Wifi".
+//   olt      aplica falando com a propria OLT, por OMCI, sem ACS nenhum.
+//            E o caminho que funcionou em campo: a OLT escreve o SSID e a
+//            senha direto na ONU pela fibra - sem TR-069, sem VLAN de
+//            gerencia, sem DHCP. Exige que a ONU esteja num perfil (onu-type)
+//            que declare as portas Wi-Fi das duas bandas.
+//            O bot nao fala com a OLT: fala com o servico em olt-wifi/, que e
+//            quem guarda a credencial. Ver OLT_WIFI_URL no .env.example.
 //   chamado  coleta o que o cliente quer e abre uma ocorrencia no SGP para a
 //            equipe aplicar. Nao automatiza, mas resolve HOJE: do lado do
 //            cliente o atendimento e o mesmo, e a equipe recebe um pedido
@@ -219,6 +226,48 @@ function acsQuery(login, mac) {
   }
   if (!ors.length) return null;
   return JSON.stringify(ors.length === 1 ? ors[0] : { $or: ors });
+}
+
+// No modo 'olt' o nome e a senha terminam numa linha de comando de switch. O
+// CLI da ZTE nao aceita espaco no nome, e trata '?' como pedido de ajuda no meio
+// da linha - o que quebraria a sessao inteira. O servico intermediario recusa
+// esses caracteres; recusar aqui tambem evita o pior desfecho, que e a pessoa
+// escolher nome e senha, confirmar, e so entao descobrir que nao valia.
+function ssidRecusado(t) {
+  if (t.length < 1 || t.length > 32) {
+    return 'O nome da rede deve ter entre 1 e 32 caracteres. Envie novamente:';
+  }
+  if (WIFI_MODO === 'olt') {
+    if (/\s/.test(t)) {
+      return 'O nome da rede não pode ter espaços. Use hífen ou ponto — por ' +
+             'exemplo *Casa-do-Joao*. Envie novamente:';
+    }
+    if (!/^[A-Za-z0-9._-]+$/.test(t)) {
+      return 'O nome da rede só aceita letras, números, ponto, hífen e ' +
+             'sublinhado (sem acentos). Envie novamente:';
+    }
+    return null;
+  }
+  if (/[\x00-\x1f]/.test(t)) return 'O nome da rede tem caracteres inválidos. Envie novamente:';
+  return null;
+}
+
+function senhaRecusada(t) {
+  if (t.length < 8 || t.length > 63) {
+    return 'A senha precisa ter entre 8 e 63 caracteres. Envie novamente:';
+  }
+  if (WIFI_MODO === 'olt') {
+    if (/\s/.test(t)) return 'A senha não pode ter espaços. Envie novamente:';
+    if (!/^[A-Za-z0-9!@#$%^&*()_+=,.:;<>[\]{}|~-]+$/.test(t)) {
+      return 'A senha tem um caractere que não consigo usar (acento, aspas ou ' +
+             'interrogação). Use letras, números e símbolos comuns. Envie novamente:';
+    }
+    return null;
+  }
+  if (!/^[\x20-\x7e]+$/.test(t)) {
+    return 'A senha só pode ter letras, números e símbolos comuns (sem acentos/emoji). Envie novamente:';
+  }
+  return null;
 }
 
 // Tela de confirmacao: mostra so o que vai mudar. Repetir o nome atual como se
@@ -422,12 +471,9 @@ switch (step) {
   }
 
   case 'awaiting_ssid': {
-    // SSID: 1-32 chars, sem caracteres de controle
-    if (text.length < 1 || text.length > 32) {
-      reply_text = 'O nome da rede deve ter entre 1 e 32 caracteres. Envie novamente:';
-      next_step = 'awaiting_ssid';
-    } else if (/[\x00-\x1f]/.test(text)) {
-      reply_text = 'O nome da rede tem caracteres inválidos. Envie novamente:';
+    const recusaSsid = ssidRecusado(text);
+    if (recusaSsid) {
+      reply_text = recusaSsid;
       next_step = 'awaiting_ssid';
     } else if (session.wifi_alvo === 'nome') {
       // So o nome: nao ha senha a pedir, vai direto para a confirmacao.
@@ -446,12 +492,9 @@ switch (step) {
   }
 
   case 'awaiting_password': {
-    // WPA2/WPA3-PSK exige 8-63 caracteres ASCII imprimiveis
-    if (text.length < 8 || text.length > 63) {
-      reply_text = 'A senha precisa ter entre 8 e 63 caracteres. Envie novamente:';
-      next_step = 'awaiting_password';
-    } else if (!/^[\x20-\x7e]+$/.test(text)) {
-      reply_text = 'A senha só pode ter letras, números e símbolos comuns (sem acentos/emoji). Envie novamente:';
+    const recusaSenha = senhaRecusada(text);
+    if (recusaSenha) {
+      reply_text = recusaSenha;
       next_step = 'awaiting_password';
     } else {
       // O cpemanage nao tem chamada de leitura: toda requisicao ESCREVE no
@@ -482,6 +525,13 @@ switch (step) {
         det.push('Solicitado pelo WhatsApp ' + phone + ', identidade validada.');
         sgp_action = 'abrir_chamado';
         sgp_payload = { contrato: session.contrato, conteudo: det.join('\n') };
+      } else if (WIFI_MODO === 'olt') {
+        // A OLT indexa por porta fisica, nao por contrato. Quem resolve isso e
+        // o proprio SGP, que ja guarda slot/pon/onuid da ONU - por isso este
+        // caminho passa por uma consulta antes de aplicar.
+        sgp_action = 'definir_wifi_olt';
+        sgp_payload = { contrato: session.contrato, mac: session.mac || '',
+                        ssid: p.ssid, senha: p.senha };
       } else if (WIFI_MODO === 'genieacs') {
         // Sem chave de juncao nao ha como identificar o equipamento. Parar
         // aqui e melhor que consultar a NBI sem filtro: uma busca vazia
@@ -756,6 +806,7 @@ session_patch.ssid_new = undefined;
 session_patch.wifi_alvo = undefined;
 
 const acs = prev.sgp_action === 'definir_wifi_acs';
+const olt = prev.sgp_action === 'definir_wifi_olt';
 const ssidNovo = prev.sgp_payload && prev.sgp_payload.ssid;
 const senhaNova = prev.sgp_payload && prev.sgp_payload.senha;
 
@@ -783,6 +834,16 @@ if (acs) {
   auditoria = { via: 'genieacs', device: montado.acs_device_id || null,
                 redes: montado.acs_redes || null, status: status || null,
                 fault: fault ? (fault.detail || fault) : null };
+} else if (olt) {
+  // O servico intermediario responde { ok, detalhe }. O detalhe pode conter a
+  // linha de erro que a OLT devolveu - que nunca inclui a senha, porque quem
+  // monta o comando e o servico e ele nao ecoa o que executou.
+  const corpo = (resp && resp.body) || {};
+  sucesso = corpo.ok === true;
+  let ondeAplicou = null;
+  try { ondeAplicou = ($('Montar Troca na OLT').first().json || {}).olt_onu || null; } catch (e) { ondeAplicou = null; }
+  auditoria = { via: 'olt', onu: ondeAplicou, detalhe: corpo.detalhe || null,
+                status: Number(resp && resp.statusCode) || null };
 } else {
   sucesso = !!(resp && resp.success === true);
   auditoria = resp;
@@ -797,7 +858,7 @@ if (sucesso) {
   // Pelo cpemanage nao da para saber se a ONU aplicou: o SGP responde success
   // assim que aceita o pedido. Pela NBI, 200 e o roteador confirmando - e ai
   // prometer "alguns minutos" seria inventar uma espera que nao existe.
-  reply_text += acs
+  reply_text += (acs || olt)
     ? '\n\nA alteração já está valendo. '
     : '\n\nO roteador pode levar alguns minutos para aplicar. ';
   reply_text += senhaNova
@@ -824,7 +885,7 @@ if (sucesso) {
   if (/Gerenciador de CPE/i.test(msg)) {
     reply_text = 'Seu roteador não está habilitado para configuração remota. Vou te transferir para um atendente resolver isso.';
     next_step = 'human_handoff';
-  } else if (acs) {
+  } else if (acs || olt) {
     // Falha na NBI e sempre algo que a equipe precisa olhar (parametro que o
     // modelo recusou, ACS fora do ar). Mandar "tente de novo" so faria o
     // cliente repetir a mesma falha.
@@ -1002,6 +1063,82 @@ return [{ json: Object.assign({}, prev, {
 }) }];
 """
 
+
+# Modo olt: traduz "trocar o Wi-Fi do contrato X" para "esta ONU, nesta porta da
+# OLT". O SGP e quem sabe onde o assinante esta fisicamente - slot, pon e onuid
+# vem do /api/fttx/onu/list/, e a partir deles se monta o endereco que a OLT
+# entende. Nenhum cadastro novo e necessario.
+JS_MONTAR_OLT = r"""
+const prev = $('Parse & Route').first().json;
+const lista = $input.first().json;
+
+function falha(motivo, extra) {
+  return [{ json: Object.assign({}, prev, {
+    olt_onu: null, olt_falha: motivo, olt_falha_extra: extra || null,
+  }) }];
+}
+
+const onus = Array.isArray(lista) ? lista : [];
+const mac = String((prev.sgp_payload && prev.sgp_payload.mac) || '')
+  .replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+
+// Uma ONU: e ela. Varias: so segue se o MAC do contrato desempatar.
+// Escolher "a primeira" aqui seria escrever no equipamento de outra pessoa - o
+// modulo de diagnostico pode fazer isso porque so le; este escreve.
+let escolhida = null;
+if (onus.length === 1) {
+  escolhida = onus[0];
+} else if (onus.length > 1 && mac) {
+  escolhida = onus.find(function (o) {
+    return String(o.phy_addr || '').replace(/[^a-zA-Z0-9]/g, '').toLowerCase() === mac;
+  }) || null;
+}
+
+if (!onus.length) return falha('onu_nao_encontrada');
+if (!escolhida) return falha('onu_ambigua', onus.length);
+
+// O chassi e 1 nas OLTs de prateleira unica. Fica configuravel porque quem tiver
+// mais de um chassi vai precisar mudar, e descobrir isso em producao e caro.
+const shelf = String($env.OLT_SHELF || '1').trim();
+const partes = [escolhida.slot, escolhida.pon, escolhida.onuid];
+if (partes.some(function (v) { return v === null || v === undefined || v === ''; })) {
+  return falha('porta_incompleta');
+}
+
+return [{ json: Object.assign({}, prev, {
+  olt_onu: 'gpon_onu-' + shelf + '/' + partes[0] + '/' + partes[1] + ':' + partes[2],
+  olt_falha: null,
+}) }];
+"""
+
+# Nao aplicou porque nem chegamos a tentar. Do lado do cliente e tudo igual -
+# ninguem mexeu no roteador dele - mas o motivo tem de ficar no log, porque e
+# ele que diz o que corrigir no cadastro da ONU no SGP.
+JS_OLT_NAO_APLICOU = r"""
+const prev = $input.first().json;
+
+const session_patch = Object.assign({}, prev.session_patch);
+session_patch.senha_new = undefined;
+session_patch.ssid_new = undefined;
+session_patch.wifi_alvo = undefined;
+
+return [{ json: Object.assign({}, prev, {
+  reply_text: 'Não consegui localizar seu equipamento para aplicar a alteração. ' +
+    'Sua rede continua como estava. Vou te transferir para um atendente.',
+  next_step: 'human_handoff',
+  session_patch: session_patch,
+  _audit: {
+    tipo: 'wifi',
+    phone: prev.phone,
+    cpf: prev.session.cpf,
+    contrato: prev.sgp_payload.contrato,
+    ssid_novo: prev.sgp_payload.ssid,
+    sucesso: false,
+    resposta_sgp: { via: 'olt', falha: prev.olt_falha,
+                    detalhe: prev.olt_falha_extra || null },
+  },
+}) }];
+"""
 
 # ---------------------------------------------------------------- Financeiro
 JS_PROC_FATURA = r"""
@@ -1375,6 +1512,8 @@ nodes = [
          "renameOutput": True, "outputKey": "definir_wifi"},
         {"conditions": cond("={{ $json.sgp_action }}", "definir_wifi_acs"),
          "renameOutput": True, "outputKey": "definir_wifi_acs"},
+        {"conditions": cond("={{ $json.sgp_action }}", "definir_wifi_olt"),
+         "renameOutput": True, "outputKey": "definir_wifi_olt"},
         {"conditions": cond("={{ $json.sgp_action }}", "abrir_chamado"),
          "renameOutput": True, "outputKey": "abrir_chamado"},
         {"conditions": cond("={{ $json.sgp_action }}", "segunda_via"),
@@ -1465,6 +1604,50 @@ nodes = [
      "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2, "position": [1600, 60]},
 
     code_node("code-acs-falhou", "ACS Nao Aplicou", JS_ACS_NAO_APLICOU, [1600, 200]),
+
+    # ---- Modulo 1c: Wi-Fi pela OLT (WIFI_MODO=olt) ----
+    # Mesmo endpoint que o diagnostico usa: e o SGP que sabe em que slot/pon/onu
+    # o assinante esta. Aqui ele serve para montar o endereco que a OLT entende.
+    {"parameters": {
+        "method": "GET", "url": "={{ $env.SGP_API_URL }}/api/fttx/onu/list/",
+        "sendQuery": True,
+        "queryParameters": {"parameters": [
+            {"name": "token", "value": "={{ $env.SGP_API_TOKEN }}"},
+            {"name": "app", "value": "={{ $env.SGP_APP_NAME }}"},
+            {"name": "contrato", "value": "={{ $json.sgp_payload.contrato }}"}]},
+        "options": {"response": {"response": {"neverError": True}}, "timeout": 25000}},
+     "id": "http-onu-contrato", "name": "SGP - ONU do Contrato",
+     "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2, "position": [1000, 340]},
+
+    code_node("code-montar-olt", "Montar Troca na OLT", JS_MONTAR_OLT, [1200, 340]),
+
+    {"parameters": {
+        "conditions": {"options": {"caseSensitive": True, "leftValue": "", "typeValidation": "loose"},
+                       "conditions": [{"leftValue": "={{ $json.olt_onu }}", "rightValue": "",
+                                       "operator": {"type": "string", "operation": "notEmpty",
+                                                    "singleValue": True}}],
+                       "combinator": "and"}, "options": {}},
+     "id": "if-olt", "name": "Achou a ONU na OLT?", "type": "n8n-nodes-base.if",
+     "typeVersion": 2.2, "position": [1400, 340]},
+
+    # O bot NAO fala com a OLT: fala com o servico de olt-wifi/, que e quem tem a
+    # credencial e quem monta os comandos. Se este bot for comprometido, o que o
+    # atacante alcanca e este endpoint - trocar o Wi-Fi de uma ONU - e nao a
+    # configuracao da rede inteira do provedor.
+    # Timeout alto porque cada chamada abre uma sessao SSH na OLT.
+    {"parameters": {
+        "method": "POST", "url": "={{ $env.OLT_WIFI_URL }}/trocar-wifi",
+        "sendBody": True, "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ onu: $json.olt_onu, ssid: $json.sgp_payload.ssid, senha: $json.sgp_payload.senha }) }}",
+        "sendHeaders": True,
+        "headerParameters": {"parameters": [
+            {"name": "X-Token", "value": "={{ $env.OLT_WIFI_TOKEN }}"}]},
+        "options": {"response": {"response": {"neverError": True, "fullResponse": True}},
+                    "timeout": 60000}},
+     "id": "http-olt-wifi", "name": "OLT - Trocar Wifi",
+     "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2, "position": [1600, 280]},
+
+    code_node("code-olt-falhou", "OLT Nao Aplicou", JS_OLT_NAO_APLICOU, [1600, 420]),
 
     code_node("code-proc-wifi", "Processar Definir Wifi", JS_PROC_WIFI, [1800, 0]),
 
@@ -1611,6 +1794,7 @@ connections = {
         to("SGP - Consultar Cliente"),   # lookup_cpf
         to("SGP - Definir Wifi"),        # definir_wifi
         to("GenieACS - Buscar Device"),  # definir_wifi_acs
+        to("SGP - ONU do Contrato"),     # definir_wifi_olt
         to("SGP - Abrir Chamado"),       # abrir_chamado
         to("SGP - Segunda Via"),         # segunda_via
         to(PERSIST),                     # fallback: so responder
@@ -1636,6 +1820,14 @@ connections = {
     "Processar Segunda Via": {"main": [to(PERSIST)]},
     "SGP - Definir Wifi": {"main": [to("Processar Definir Wifi")]},
     "GenieACS - Buscar Device": {"main": [to("Montar Tarefa Wifi")]},
+    "SGP - ONU do Contrato": {"main": [to("Montar Troca na OLT")]},
+    "Montar Troca na OLT": {"main": [to("Achou a ONU na OLT?")]},
+    "Achou a ONU na OLT?": {"main": [
+        to("OLT - Trocar Wifi"),         # true: sei em que porta da OLT escrever
+        to("OLT Nao Aplicou"),           # false
+    ]},
+    "OLT - Trocar Wifi": {"main": [to("Processar Definir Wifi")]},
+    "OLT Nao Aplicou": {"main": [to(PERSIST)]},
     "Montar Tarefa Wifi": {"main": [to("Da para aplicar no ACS?")]},
     "Da para aplicar no ACS?": {"main": [
         to("GenieACS - Aplicar Wifi"),   # true: achou o device e sei o que escrever
