@@ -878,6 +878,28 @@ check(/Alterar nome\/senha do Wi-Fi/.test(ts.reply),
 as = ateIdentidade('1', PHONE_OK);
 check(as.t.step === 'awaiting_wifi_what', 'sem a variavel, ainda pergunta o que alterar');
 
+// --- as duas formas em que a lista de ONUs pode chegar ---
+// O n8n quebra resposta JSON que e array em varios itens. O node precisa
+// entender as duas formas: foi esse falso negativo que fez o bot responder
+// "nao localizei seu equipamento" com a ONU vinculada ao contrato, em producao.
+console.log('');
+console.log('--- formato da lista de ONUs ---');
+const prevFalso = { sgp_payload: { contrato: 473, mac: '2C:B6:C2:14:D9:58', senha: 'X' } };
+
+let mm = run('Montar Troca na OLT', [onuOlt(2, 2, 1)], { 'Parse & Route': prevFalso });
+check(mm.olt_onu === 'gpon_onu-1/2/2:1', 'ONU como item solto (n8n quebrou o array)');
+
+mm = run('Montar Troca na OLT', [[onuOlt(2, 2, 1)]], { 'Parse & Route': prevFalso });
+check(mm.olt_onu === 'gpon_onu-1/2/2:1', 'ONU dentro de um array');
+
+mm = run('Montar Troca na OLT', [onuOlt(2, 2, 1), onuOlt(3, 3, 2)], { 'Parse & Route': prevFalso });
+check(!mm.olt_onu && mm.olt_falha === 'onu_ambigua', 'duas ONUs como itens soltos -> ambigua');
+
+mm = run('Montar Troca na OLT', [{}], { 'Parse & Route': prevFalso });
+check(!mm.olt_onu && mm.olt_falha === 'onu_nao_encontrada',
+      'item vazio (resposta sem ONU) -> nao encontrada');
+
+
 ENV = {};
 td = turn(null, 'oi', PHONE_OK);
 check(/Alterar nome\/senha do Wi-Fi/.test(td.reply), 'sem a variavel, o padrao e aplicar pelo ACS');

@@ -1094,7 +1094,6 @@ return [{ json: Object.assign({}, prev, {
 # entende. Nenhum cadastro novo e necessario.
 JS_MONTAR_OLT = r"""
 const prev = $('Parse & Route').first().json;
-const lista = $input.first().json;
 
 function falha(motivo, extra) {
   return [{ json: Object.assign({}, prev, {
@@ -1102,7 +1101,21 @@ function falha(motivo, extra) {
   }) }];
 }
 
-const onus = Array.isArray(lista) ? lista : [];
+// O n8n quebra resposta JSON que e array em VARIOS itens, um por elemento.
+// Entao $input.first().json pode ser o array inteiro ou apenas a primeira ONU
+// dele, conforme a versao e a configuracao do node. Ler so o primeiro item e
+// testar Array.isArray da falso negativo: a lista vira vazia e o bot responde
+// "nao localizei seu equipamento" com a ONU bem ali, vinculada ao contrato.
+// Aconteceu em producao em 31/08/2026. Aceita as duas formas.
+const itens = $input.all().map(function (i) { return i.json; });
+let onus = [];
+if (itens.length === 1 && Array.isArray(itens[0])) {
+  onus = itens[0];
+} else {
+  onus = itens.filter(function (o) {
+    return o && typeof o === 'object' && (o.slot !== undefined || o.id !== undefined);
+  });
+}
 const mac = String((prev.sgp_payload && prev.sgp_payload.mac) || '')
   .replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
 
@@ -1278,12 +1291,25 @@ return [{ json: Object.assign({}, prev, {
 # ---------------------------------------------------------------- Diagnostico
 JS_PROC_BUSCA_ONU = r"""
 const prev = $('Parse & Route').first().json;
-const lista = $input.first().json;
 
 // /api/fttx/onu/list/ devolve um array. Filtrar por ?contrato= e o caminho
 // natural, mas nem toda base tem esse vinculo preenchido - por isso o node
 // seguinte tenta de novo por phy_addr (que casa com servico_mac do contrato).
-const onus = Array.isArray(lista) ? lista : [];
+// O n8n quebra resposta JSON que e array em VARIOS itens, um por elemento.
+// Entao $input.first().json pode ser o array inteiro ou apenas a primeira ONU
+// dele, conforme a versao e a configuracao do node. Ler so o primeiro item e
+// testar Array.isArray da falso negativo: a lista vira vazia e o bot responde
+// "nao localizei seu equipamento" com a ONU bem ali, vinculada ao contrato.
+// Aconteceu em producao em 31/08/2026. Aceita as duas formas.
+const itens = $input.all().map(function (i) { return i.json; });
+let onus = [];
+if (itens.length === 1 && Array.isArray(itens[0])) {
+  onus = itens[0];
+} else {
+  onus = itens.filter(function (o) {
+    return o && typeof o === 'object' && (o.slot !== undefined || o.id !== undefined);
+  });
+}
 const mac = String((prev.sgp_payload && prev.sgp_payload.mac) || '').replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
 
 let escolhida = null;
@@ -1640,6 +1666,7 @@ nodes = [
             {"name": "app", "value": "={{ $env.SGP_APP_NAME }}"},
             {"name": "contrato", "value": "={{ $json.sgp_payload.contrato }}"}]},
         "options": {"response": {"response": {"neverError": True}}, "timeout": 25000}},
+     "alwaysOutputData": True,
      "id": "http-onu-contrato", "name": "SGP - ONU do Contrato",
      "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2, "position": [1000, 340]},
 
@@ -1712,6 +1739,7 @@ nodes = [
             {"name": "app", "value": "={{ $env.SGP_APP_NAME }}"},
             {"name": "contrato", "value": "={{ $json.sgp_payload.contrato }}"}]},
         "options": {"response": {"response": {"neverError": True}}, "timeout": 25000}},
+     "alwaysOutputData": True,
      "id": "http-onu-list", "name": "SGP - Buscar ONU",
      "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2, "position": [1600, -440]},
 
