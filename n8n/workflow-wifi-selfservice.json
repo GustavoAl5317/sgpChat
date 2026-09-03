@@ -586,10 +586,42 @@
     },
     {
       "parameters": {
-        "jsCode": "const prev = $input.first().json;\n\nconst session_patch = Object.assign({}, prev.session_patch);\nsession_patch.senha_new = undefined;\nsession_patch.ssid_new = undefined;\nsession_patch.wifi_alvo = undefined;\n\nreturn [{ json: Object.assign({}, prev, {\n  reply_text: 'Não consegui localizar seu equipamento para aplicar a alteração. ' +\n    'Sua rede continua como estava. Vou te transferir para um atendente.',\n  next_step: 'human_handoff',\n  session_patch: session_patch,\n  _audit: {\n    tipo: 'wifi',\n    phone: prev.phone,\n    cpf: prev.session.cpf,\n    contrato: prev.sgp_payload.contrato,\n    ssid_novo: prev.sgp_payload.ssid,\n    sucesso: false,\n    resposta_sgp: { via: 'olt', falha: prev.olt_falha,\n                    detalhe: prev.olt_falha_extra || null },\n  },\n}) }];"
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.body.ok }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
       },
-      "id": "code-olt-falhou",
-      "name": "OLT Nao Aplicou",
+      "id": "if-olt-ok",
+      "name": "Aplicou na OLT?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1750,
+        280
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const prev = $input.first().json;\nconst p = prev.sgp_payload || {};\n\n// Descobre por que nao deu, para o tecnico saber o que encontrar. O motivo vem\n// de dois lugares diferentes: do node que monta o endereco (nao achou a ONU) ou\n// da resposta do servico (a OLT recusou o comando).\nlet motivo = prev.olt_falha || null;\nif (!motivo) {\n  try {\n    const r = $('OLT - Trocar Wifi').first().json;\n    motivo = ((r && r.body && r.body.detalhe) || 'a OLT recusou o comando');\n  } catch (e) { motivo = 'a OLT recusou o comando'; }\n}\n\nconst det = ['Solicitacao de alteracao de Wi-Fi pelo atendimento automatico.',\n             'O sistema TENTOU aplicar sozinho e nao conseguiu: ' + motivo + '.'];\nif (p.ssid)  det.push('Novo nome da rede: ' + p.ssid);\nif (p.senha) det.push('Nova senha: ' + p.senha);\ndet.push('Solicitado pelo WhatsApp ' + prev.phone + ', identidade validada.');\n\nreturn [{ json: Object.assign({}, prev, {\n  sgp_action: 'abrir_chamado',\n  sgp_payload: { contrato: p.contrato, conteudo: det.join('\\n') },\n  wifi_virou_chamado: true,\n  wifi_motivo: motivo,\n}) }];"
+      },
+      "id": "code-vira-chamado",
+      "name": "Wifi Vira Chamado",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
@@ -694,7 +726,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const prev = $('Parse & Route').first().json;\nconst resp = $input.first().json;\n\n// Resposta do SGP: { status, razaoSocial, protocolo, cpfCnpj, contratoId, msg }\nconst protocolo = resp && resp.protocolo;\nlet reply_text, next_step;\n\nif (protocolo) {\n  reply_text = 'Chamado aberto com sucesso!\\n\\n*Protocolo:* ' + protocolo +\n    '\\n\\nNossa equipe vai analisar e entrar em contato. Guarde esse número para acompanhar.\\n\\n' +\n    'Digite *menu* para voltar ao início.';\n  next_step = 'menu';\n} else {\n  const msg = (resp && resp.msg) ? String(resp.msg) : '';\n  reply_text = 'Não consegui abrir o chamado automaticamente' + (msg ? ' (' + msg + ')' : '') +\n    '. Vou te transferir para um atendente.';\n  next_step = 'human_handoff';\n}\n\nconst session_patch = Object.assign({}, prev.session_patch, { reset: true });\n\nreturn [{ json: Object.assign({}, prev, {\n  reply_text: reply_text,\n  next_step: next_step,\n  session_patch: session_patch,\n  _audit: {\n    tipo: 'chamado',\n    phone: prev.phone,\n    cpf: prev.session.cpf,\n    contrato: prev.sgp_payload.contrato,\n    ssid_novo: protocolo ? ('protocolo:' + protocolo) : null,\n    sucesso: !!protocolo,\n    resposta_sgp: resp,\n  },\n}) }];"
+        "jsCode": "const prev = $('Parse & Route').first().json;\nconst resp = $input.first().json;\n\n// Resposta do SGP: { status, razaoSocial, protocolo, cpfCnpj, contratoId, msg }\nconst protocolo = resp && resp.protocolo;\nlet reply_text, next_step;\n\n// Chamado nascido de uma troca de Wi-Fi que nao pode ser aplicada sozinha:\n// a pessoa escolheu uma senha e merece saber o que aconteceu com ela.\nlet veioDoWifi = false;\ntry { veioDoWifi = $('Wifi Vira Chamado').first().json.wifi_virou_chamado === true; } catch (e) { veioDoWifi = false; }\n\nif (protocolo && veioDoWifi) {\n  reply_text = 'Seu equipamento não aceita a alteração automática, então registrei ' +\n    'o pedido para nossa equipe aplicar.\\n\\n*Protocolo:* ' + protocolo +\n    '\\n\\nVocê será avisado quando estiver pronto. Sua rede continua como está até lá.\\n\\n' +\n    'Digite *menu* para voltar ao início.';\n  next_step = 'menu';\n} else if (protocolo) {\n  reply_text = 'Chamado aberto com sucesso!\\n\\n*Protocolo:* ' + protocolo +\n    '\\n\\nNossa equipe vai analisar e entrar em contato. Guarde esse número para acompanhar.\\n\\n' +\n    'Digite *menu* para voltar ao início.';\n  next_step = 'menu';\n} else {\n  const msg = (resp && resp.msg) ? String(resp.msg) : '';\n  reply_text = 'Não consegui abrir o chamado automaticamente' + (msg ? ' (' + msg + ')' : '') +\n    '. Vou te transferir para um atendente.';\n  next_step = 'human_handoff';\n}\n\nconst session_patch = Object.assign({}, prev.session_patch, { reset: true });\n\nreturn [{ json: Object.assign({}, prev, {\n  reply_text: reply_text,\n  next_step: next_step,\n  session_patch: session_patch,\n  _audit: {\n    tipo: veioDoWifi ? 'wifi' : 'chamado',\n    phone: prev.phone,\n    cpf: prev.session.cpf,\n    contrato: prev.sgp_payload.contrato,\n    ssid_novo: protocolo ? ('protocolo:' + protocolo) : null,\n    sucesso: !!protocolo,\n    resposta_sgp: resp,\n  },\n}) }];"
       },
       "id": "code-proc-chamado",
       "name": "Processar Chamado",
@@ -1314,7 +1346,7 @@
         ],
         [
           {
-            "node": "OLT Nao Aplicou",
+            "node": "Wifi Vira Chamado",
             "type": "main",
             "index": 0
           }
@@ -1325,18 +1357,36 @@
       "main": [
         [
           {
-            "node": "Processar Definir Wifi",
+            "node": "Aplicou na OLT?",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "OLT Nao Aplicou": {
+    "Aplicou na OLT?": {
       "main": [
         [
           {
-            "node": "Preparar Persistencia",
+            "node": "Processar Definir Wifi",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Wifi Vira Chamado",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wifi Vira Chamado": {
+      "main": [
+        [
+          {
+            "node": "SGP - Abrir Chamado",
             "type": "main",
             "index": 0
           }

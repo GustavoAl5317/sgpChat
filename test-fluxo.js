@@ -82,12 +82,16 @@ function turn(sessionRow, text, phone, sgpResponse, faturas, diag, espiar, acs, 
   } else if (r.sgp_action === 'definir_wifi_olt') {
     // Caminho da OLT: achar a ONU no SGP -> montar o endereco -> aplicar.
     montado = run('Montar Troca na OLT', [(olt && olt.lista) || []], { 'Parse & Route': r });
-    if (!montado.olt_onu) {
-      r = run('OLT Nao Aplicou', [montado], {});
-    } else {
-      r = run('Processar Definir Wifi',
-              [(olt && olt.aplicar) || { statusCode: 200, body: { ok: true } }],
+    const aplicou = (olt && olt.aplicar) || { statusCode: 200, body: { ok: true } };
+    if (montado.olt_onu && aplicou.body && aplicou.body.ok === true) {
+      r = run('Processar Definir Wifi', [aplicou],
               { 'Parse & Route': r, 'Montar Troca na OLT': montado });
+    } else {
+      // Nao deu para aplicar: o pedido vira chamado, nao vai para o atendente.
+      const vira = run('Wifi Vira Chamado', [montado], { 'OLT - Trocar Wifi': aplicou });
+      if (espiar) espiar(vira.sgp_payload);
+      r = run('Processar Chamado', [(olt && olt.chamado) || { protocolo: '900001' }],
+              { 'Parse & Route': r, 'Wifi Vira Chamado': vira });
     }
   } else if (r.sgp_action === 'definir_wifi_acs') {
     // Caminho da NBI: buscar o device -> montar a tarefa -> aplicar. O IF
@@ -762,20 +766,31 @@ ro = turn(so, '1', PHONE_OK, null, null, null, null, null,
           { lista: [onuOlt(4, 8, 27)], aplicar: APLICOU_OLT });
 check(ro.montado.olt_onu === 'gpon_onu-1/4/8:27', 'monta o endereco de outra posicao');
 
-// --------- Os casos em que NAO se escreve ---------
+// --------- Quando nao da para aplicar, vira chamado ---------
+// A cobertura automatica cresce por instalacao nova, entao por muito tempo a
+// maior parte da base vai cair aqui. Mandar essa gente para o atendente seria
+// entregar algo PIOR que o modo 'chamado' que ja existia. O pedido nao pode se
+// perder: vira ocorrencia no SGP com identidade validada e protocolo de volta.
+let pedidoOlt = null;
 so = ateConfirmarOlt('3', ['RedeNova', 'SenhaNova123']);
-let rfo = turn(so, '1', PHONE_OK, null, null, null, null, null, { lista: [] });
-check(rfo.step === 'human_handoff', 'contrato sem ONU no SGP -> atendente');
-check(/continua como estava/.test(rfo.reply), 'diz que a rede nao foi mexida');
-check(rfo.audit.resposta_sgp.falha === 'onu_nao_encontrada', 'motivo fica no log');
+let rfo = turn(so, '1', PHONE_OK, null, null, null,
+               function (pp) { pedidoOlt = pp; }, null, { lista: [] });
+check(rfo.step === 'menu', 'contrato sem ONU -> nao vai para o atendente');
+check(/Protocolo/.test(rfo.reply || ''), 'cliente recebe protocolo');
+check(/continua como está/.test(rfo.reply || ''),
+      'diz que a rede nao foi mexida enquanto isso');
+check(/SenhaNova123/.test(pedidoOlt.conteudo), 'o chamado leva a senha para o tecnico');
+check(/onu_nao_encontrada/.test(pedidoOlt.conteudo),
+      'o chamado diz por que a automacao nao conseguiu');
 
-// Duas ONUs e nenhuma casa com o MAC do contrato. O modulo de diagnostico pega
-// a primeira nesse caso - pode, porque so le. Aqui escreveria na casa errada.
+// Duas ONUs e nenhuma casa com o MAC do contrato: escrever seria mexer na casa
+// errada. Vira chamado tambem, e o motivo vai junto.
+pedidoOlt = null;
 so = ateConfirmarOlt('3', ['RedeNova', 'SenhaNova123']);
-rfo = turn(so, '1', PHONE_OK, null, null, null, null, null,
-          { lista: [onuOlt(2, 2, 1, 'ZTEGAAAA1111'), onuOlt(2, 2, 2, 'ZTEGBBBB2222')] });
-check(rfo.step === 'human_handoff' && rfo.audit.resposta_sgp.falha === 'onu_ambigua',
-      'duas ONUs sem desempate -> nao escolhe nenhuma');
+rfo = turn(so, '1', PHONE_OK, null, null, null, function (pp) { pedidoOlt = pp; }, null,
+           { lista: [onuOlt(2, 2, 1, 'ZTEGAAAA1111'), onuOlt(2, 2, 2, 'ZTEGBBBB2222')] });
+check(/onu_ambigua/.test(pedidoOlt.conteudo), 'duas ONUs sem desempate -> chamado com o motivo');
+check(rfo.step === 'menu', 'e o cliente segue atendido');
 
 // Com o MAC do contrato batendo, o desempate e legitimo
 const macDoContrato = String(ativos[0].servico_mac || '').replace(/[^a-zA-Z0-9]/g, '');
@@ -789,19 +804,24 @@ if (macDoContrato) {
 }
 
 // Cadastro incompleto no SGP nao pode virar endereco pela metade
+pedidoOlt = null;
 so = ateConfirmarOlt('3', ['RedeNova', 'SenhaNova123']);
-rfo = turn(so, '1', PHONE_OK, null, null, null, null, null,
-          { lista: [{ id: 1, olt_name: 'OLT ZTE', slot: 2, pon: null, onuid: 1 }] });
-check(rfo.audit.resposta_sgp.falha === 'porta_incompleta',
-      'slot/pon/onu faltando -> nao monta endereco torto');
+rfo = turn(so, '1', PHONE_OK, null, null, null, function (pp) { pedidoOlt = pp; }, null,
+           { lista: [{ id: 1, olt_name: 'OLT ZTE', slot: 2, pon: null, onuid: 1 }] });
+check(/porta_incompleta/.test(pedidoOlt.conteudo),
+      'slot/pon/onu faltando -> chamado, sem inventar endereco');
 
-// A OLT recusou o comando
+// A OLT recusou o comando - o caso mais comum enquanto a base nao for migrada,
+// porque as ONUs em perfil antigo nao tem a porta de 5 GHz.
+pedidoOlt = null;
 so = ateConfirmarOlt('3', ['RedeNova', 'SenhaNova123']);
-rfo = turn(so, '1', PHONE_OK, null, null, null, null, null,
-          { lista: UMA_ONU,
-            aplicar: { statusCode: 502, body: { ok: false, detalhe: '%Error 223845: UNI does not exist.' } } });
-check(rfo.step === 'human_handoff', 'OLT recusou -> atendente, nao "tente de novo"');
-check(/UNI does not exist/.test(JSON.stringify(rfo.audit)), 'o erro da OLT fica no log');
+rfo = turn(so, '1', PHONE_OK, null, null, null, function (pp) { pedidoOlt = pp; }, null,
+           { lista: UMA_ONU,
+             aplicar: { statusCode: 502, body: { ok: false, detalhe: '%Error 223845: UNI does not exist.' } } });
+check(rfo.step === 'menu', 'OLT recusou -> vira chamado, cliente atendido');
+check(/UNI does not exist/.test(pedidoOlt.conteudo), 'o erro da OLT vai no chamado');
+check(/não aceita a alteração automática/.test(rfo.reply || ''),
+      'a mensagem explica que o equipamento nao aceita, sem jargao');
 
 // --------- Validacao mais estrita neste modo ---------
 // O que o cliente digita vai para uma linha de comando de switch. Recusar na

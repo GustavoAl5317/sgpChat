@@ -1151,29 +1151,32 @@ return [{ json: Object.assign({}, prev, {
 # Nao aplicou porque nem chegamos a tentar. Do lado do cliente e tudo igual -
 # ninguem mexeu no roteador dele - mas o motivo tem de ficar no log, porque e
 # ele que diz o que corrigir no cadastro da ONU no SGP.
-JS_OLT_NAO_APLICOU = r"""
+JS_WIFI_VIRA_CHAMADO = r"""
 const prev = $input.first().json;
+const p = prev.sgp_payload || {};
 
-const session_patch = Object.assign({}, prev.session_patch);
-session_patch.senha_new = undefined;
-session_patch.ssid_new = undefined;
-session_patch.wifi_alvo = undefined;
+// Descobre por que nao deu, para o tecnico saber o que encontrar. O motivo vem
+// de dois lugares diferentes: do node que monta o endereco (nao achou a ONU) ou
+// da resposta do servico (a OLT recusou o comando).
+let motivo = prev.olt_falha || null;
+if (!motivo) {
+  try {
+    const r = $('OLT - Trocar Wifi').first().json;
+    motivo = ((r && r.body && r.body.detalhe) || 'a OLT recusou o comando');
+  } catch (e) { motivo = 'a OLT recusou o comando'; }
+}
+
+const det = ['Solicitacao de alteracao de Wi-Fi pelo atendimento automatico.',
+             'O sistema TENTOU aplicar sozinho e nao conseguiu: ' + motivo + '.'];
+if (p.ssid)  det.push('Novo nome da rede: ' + p.ssid);
+if (p.senha) det.push('Nova senha: ' + p.senha);
+det.push('Solicitado pelo WhatsApp ' + prev.phone + ', identidade validada.');
 
 return [{ json: Object.assign({}, prev, {
-  reply_text: 'Não consegui localizar seu equipamento para aplicar a alteração. ' +
-    'Sua rede continua como estava. Vou te transferir para um atendente.',
-  next_step: 'human_handoff',
-  session_patch: session_patch,
-  _audit: {
-    tipo: 'wifi',
-    phone: prev.phone,
-    cpf: prev.session.cpf,
-    contrato: prev.sgp_payload.contrato,
-    ssid_novo: prev.sgp_payload.ssid,
-    sucesso: false,
-    resposta_sgp: { via: 'olt', falha: prev.olt_falha,
-                    detalhe: prev.olt_falha_extra || null },
-  },
+  sgp_action: 'abrir_chamado',
+  sgp_payload: { contrato: p.contrato, conteudo: det.join('\n') },
+  wifi_virou_chamado: true,
+  wifi_motivo: motivo,
 }) }];
 """
 
@@ -1258,7 +1261,18 @@ const resp = $input.first().json;
 const protocolo = resp && resp.protocolo;
 let reply_text, next_step;
 
-if (protocolo) {
+// Chamado nascido de uma troca de Wi-Fi que nao pode ser aplicada sozinha:
+// a pessoa escolheu uma senha e merece saber o que aconteceu com ela.
+let veioDoWifi = false;
+try { veioDoWifi = $('Wifi Vira Chamado').first().json.wifi_virou_chamado === true; } catch (e) { veioDoWifi = false; }
+
+if (protocolo && veioDoWifi) {
+  reply_text = 'Seu equipamento não aceita a alteração automática, então registrei ' +
+    'o pedido para nossa equipe aplicar.\n\n*Protocolo:* ' + protocolo +
+    '\n\nVocê será avisado quando estiver pronto. Sua rede continua como está até lá.\n\n' +
+    'Digite *menu* para voltar ao início.';
+  next_step = 'menu';
+} else if (protocolo) {
   reply_text = 'Chamado aberto com sucesso!\n\n*Protocolo:* ' + protocolo +
     '\n\nNossa equipe vai analisar e entrar em contato. Guarde esse número para acompanhar.\n\n' +
     'Digite *menu* para voltar ao início.';
@@ -1277,7 +1291,7 @@ return [{ json: Object.assign({}, prev, {
   next_step: next_step,
   session_patch: session_patch,
   _audit: {
-    tipo: 'chamado',
+    tipo: veioDoWifi ? 'wifi' : 'chamado',
     phone: prev.phone,
     cpf: prev.session.cpf,
     contrato: prev.sgp_payload.contrato,
@@ -1698,7 +1712,18 @@ nodes = [
      "id": "http-olt-wifi", "name": "OLT - Trocar Wifi",
      "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2, "position": [1600, 280]},
 
-    code_node("code-olt-falhou", "OLT Nao Aplicou", JS_OLT_NAO_APLICOU, [1600, 420]),
+    # A OLT nao usa codigo de saida util: quem diz se aplicou e o corpo que o
+    # servico devolve. Este IF e o que separa "trocou" de "vira chamado".
+    {"parameters": {
+        "conditions": {"options": {"caseSensitive": True, "leftValue": "", "typeValidation": "loose"},
+                       "conditions": [{"leftValue": "={{ $json.body.ok }}", "rightValue": True,
+                                       "operator": {"type": "boolean", "operation": "true",
+                                                    "singleValue": True}}],
+                       "combinator": "and"}, "options": {}},
+     "id": "if-olt-ok", "name": "Aplicou na OLT?", "type": "n8n-nodes-base.if",
+     "typeVersion": 2.2, "position": [1750, 280]},
+
+    code_node("code-vira-chamado", "Wifi Vira Chamado", JS_WIFI_VIRA_CHAMADO, [1600, 420]),
 
     code_node("code-proc-wifi", "Processar Definir Wifi", JS_PROC_WIFI, [1800, 0]),
 
@@ -1876,10 +1901,16 @@ connections = {
     "Montar Troca na OLT": {"main": [to("Achou a ONU na OLT?")]},
     "Achou a ONU na OLT?": {"main": [
         to("OLT - Trocar Wifi"),         # true: sei em que porta da OLT escrever
-        to("OLT Nao Aplicou"),           # false
+        to("Wifi Vira Chamado"),         # false: nao achei o equipamento
     ]},
-    "OLT - Trocar Wifi": {"main": [to("Processar Definir Wifi")]},
-    "OLT Nao Aplicou": {"main": [to(PERSIST)]},
+    "OLT - Trocar Wifi": {"main": [to("Aplicou na OLT?")]},
+    "Aplicou na OLT?": {"main": [
+        to("Processar Definir Wifi"),    # true: aplicado, avisa o cliente
+        to("Wifi Vira Chamado"),         # false: a OLT recusou
+    ]},
+    # O pedido nao se perde: vira ocorrencia no SGP com identidade ja validada,
+    # exatamente como no modo 'chamado'.
+    "Wifi Vira Chamado": {"main": [to("SGP - Abrir Chamado")]},
     "Montar Tarefa Wifi": {"main": [to("Da para aplicar no ACS?")]},
     "Da para aplicar no ACS?": {"main": [
         to("GenieACS - Aplicar Wifi"),   # true: achou o device e sei o que escrever
