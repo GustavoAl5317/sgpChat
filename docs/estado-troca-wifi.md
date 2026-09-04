@@ -409,4 +409,27 @@ para eles. Este é o item que decide a cobertura real do projeto.
 - Remover o preset padrão do GenieACS que tenta escrever
   `ManagementServer.PeriodicInformTime` — o firmware recusa com `9007` e suja
   todas as sessões.
-- Gerar o script de migração de perfil da base a partir do `running-config`.
+- Testar Wi-Fi por OMCI numa ONT **Huawei** — decide se a cobertura é 183 ou 409.
+
+## A migração da base
+
+O gerador existe: `migrar-perfil.py`. Ele não toca na OLT — lê a configuração e
+escreve os comandos, que você confere antes de colar.
+
+```bash
+ssh admin@olt 'show running-config' > running-config.txt
+python3 migrar-perfil.py running-config.txt --pon 1/2 > migrar-pon-1-2.txt
+```
+
+Ele lê a configuração **real** de cada ONU e devolve a restauração completa, na
+ordem certa. Se encontrar uma linha que não sabe recolocar, pula a ONU e diz por
+quê — uma ONU não migrada é melhor que uma ONU migrada pela metade.
+
+O `--pon` existe porque migrar de PON em PON limita o tamanho de qualquer erro.
+Ao fim de cada bloco há duas linhas de `show` para conferir; se um `Sport` não
+voltar em `OK/YES`, pare, porque é exatamente o que deixa o assinante com
+"ISP Timeout".
+
+Uma ressalva: a linha `mgmt-ip` do `running-config` termina com um `host 1` que
+a própria OLT acrescenta. Se ela recusar esse sufixo na hora de recolocar, tire
+o `host 1` e siga. Só afeta ONUs com gerência configurada, que hoje é uma só.
