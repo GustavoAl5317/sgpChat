@@ -35,10 +35,26 @@ DESTINO = {
     "hg8145v5-v2": "RCNET-HW",
 }
 
+# Metade do parque tem perfil de ZTE em equipamento Huawei, entao o perfil de
+# origem nao diz o fabricante - o prefixo do serial GPON diz. Os dois perfis de
+# destino declaram exatamente as mesmas portas; o nome existe para quem for ler
+# o inventario depois saber o que e o que.
+POR_FABRICANTE = {"HWTC": "RCNET-HW", "ZTEG": "RCNET-HGU"}
+
+
+def destino(o):
+    """Para qual perfil esta ONU vai, ou None se nao se sabe."""
+    if o.tipo not in DESTINO:
+        return None
+    return POR_FABRICANTE.get((o.sn or "")[:4].upper()) or DESTINO[o.tipo]
+
 # Linhas que o script sabe recolocar depois do 'no onu'. Qualquer outra faz a ONU
 # ser pulada: recolocar o que nao se entende e como restaurar de memoria.
 CONHECIDAS_ONU = ("real-speed", "tcont ", "gemport ")
-CONHECIDAS_MNG = ("service ", "veip ", "mgmt-ip ", "tr069-mgmt ", "security-mgmt ")
+# 'vlan port veip_1 mode tag vlan 200' aparece nas ONUs em bridge, no lugar do
+# 'veip 1' das ONUs roteadas. Sem ela a ONU volta sem marcacao de VLAN no veip.
+CONHECIDAS_MNG = ("service ", "veip ", "vlan port ", "mgmt-ip ", "tr069-mgmt ",
+                  "security-mgmt ")
 CONHECIDAS_VPORT = ("service-port ", "qos traffic-policy ")
 
 # 'real-speed' e estado, nao configuracao: a OLT recoloca sozinha e o comando nao
@@ -150,7 +166,7 @@ def conferir(o):
     """Diz por que esta ONU nao pode ser migrada com seguranca."""
     if not o.tipo or not o.sn:
         o.problemas.append("sem declaracao 'onu N type X sn Y'")
-    if o.tipo and o.tipo not in DESTINO:
+    if o.tipo and destino(o) is None:
         o.problemas.append("perfil %s nao tem destino definido" % o.tipo)
     if not o.linhas_onu:
         o.problemas.append("sem tcont/gemport - nao sei o que recolocar")
@@ -174,7 +190,7 @@ def bloco(o):
     """Os comandos de migracao desta ONU, na ordem em que devem ser colados."""
     fora = []
     add = fora.append
-    novo = DESTINO[o.tipo]
+    novo = destino(o)
 
     add("! ---- %s  (%s)  %s -> %s" % (o.endereco, o.sn, o.tipo, novo))
     add("configure terminal")

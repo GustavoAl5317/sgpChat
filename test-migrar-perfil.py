@@ -105,6 +105,19 @@ interface vport-1/2/2.6:1
 !
 interface gpon_olt-1/1/1
  onu 4 type F670L sn ZTEGD420E6A8
+ onu 19 type F670L sn HWTC611D44AC
+!
+interface gpon_onu-1/1/1:19
+ real-speed gpon
+ tcont 1 profile SMARTOLT-1G-UP
+ gemport 1 tcont 1
+!
+pon-onu-mng gpon_onu-1/1/1:19
+ service 1 gemport 1 vlan 200
+ vlan port veip_1 mode tag vlan 200
+!
+interface vport-1/1/1.19:1
+ service-port 1 user-vlan 200 vlan 11
 !
 interface gpon_onu-1/1/1:4
  tcont 1 profile SMARTOLT-1G-UP
@@ -125,7 +138,7 @@ interface vport-1/1/1.4:1
 print("=== Coleta ===")
 
 onus = mig.coletar(CONFIG)
-check(len(onus) == 7, "achou as sete ONUs (achou %d)" % len(onus))
+check(len(onus) == 8, "achou as oito ONUs (achou %d)" % len(onus))
 
 ygson = onus[("1", "2", "2", "1")]
 check(ygson.tipo == "F670L", "leu o perfil da ONU")
@@ -207,6 +220,22 @@ texto_466 = "\n".join(mig.bloco(onus[("1", "1", "1", "4")]))
 check("service-port 1 user-vlan 200 vlan 11" in texto_466,
       "usa a VLAN que estava na configuracao, nao a de outra PON")
 check("deveria ser 11" in texto_466, "e a esperada bate com a formula")
+
+
+print("=== ONU em bridge, Huawei com perfil de ZTE ===")
+
+bridge = onus[("1", "1", "1", "19")]
+check(mig.conferir(bridge), "ONU em bridge pode migrar")
+texto_br = "\n".join(mig.bloco(bridge))
+check("onu 19 type RCNET-HW sn HWTC611D44AC" in texto_br,
+      "equipamento Huawei vai para o RCNET-HW mesmo com perfil F670L")
+check("vlan port veip_1 mode tag vlan 200" in texto_br,
+      "recoloca a marcacao de VLAN do veip, que so existe nas de bridge")
+check("service 1 gemport 1 vlan 200" in texto_br, "recoloca o servico")
+check("service-port 1 user-vlan 200 vlan 11" in texto_br,
+      "recoloca o service-port com a VLAN da PON 1/1/1")
+check("qos traffic-policy" not in texto_br,
+      "nao inventa politica de QoS onde nao havia")
 
 
 print("=== Destino por fabricante ===")
