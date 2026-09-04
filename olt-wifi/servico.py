@@ -44,6 +44,25 @@ PORTA = int(os.environ.get("OLT_WIFI_PORT", "8080"))
 WIFI_24 = os.environ.get("OLT_WIFI_IF_24", "wifi_0/1")
 WIFI_5G = os.environ.get("OLT_WIFI_IF_5G", "wifi_0/5")
 
+# Perfis de ONU que declaram as duas bandas.
+#
+# A OLT so aceita escrever num indice de Wi-Fi que o perfil (onu-type) da ONU
+# declara. Os perfis antigos declaram apenas o wifi_0/1, e o comando de 5 GHz
+# volta com "%Error 223845: UNI does not exist".
+#
+# Isso importa muito mais do que parece, porque os comandos aplicam em sequencia:
+# quando o de 5 GHz falha, o de 2.4 GHz JA MUDOU a rede do assinante. O bot
+# avisaria que nao conseguiu alterar nada, e a pessoa teria acabado de perder o
+# Wi-Fi de casa - "mudou e nao mudou", o pior desfecho para quem atende.
+#
+# Por isso o perfil e conferido ANTES de escrever qualquer coisa. Recusar sem ter
+# tocado em nada e um resultado honesto; aplicar metade nao e.
+#
+# "*" desliga a conferencia, e so faz sentido depois que a base inteira migrar.
+PERFIS_OK = [x.strip() for x in
+             os.environ.get("OLT_PERFIS_OK", "RCNET-HGU,RCNET-HW").split(",")
+             if x.strip()]
+
 # ---------------------------------------------------------------- validacao
 #
 # Estes campos vem de uma pessoa digitando no WhatsApp e terminam numa linha de
@@ -56,6 +75,35 @@ WIFI_5G = os.environ.get("OLT_WIFI_IF_5G", "wifi_0/5")
 RE_ONU = re.compile(r"^gpon_onu-\d{1,2}/\d{1,2}/\d{1,2}:\d{1,3}$")
 RE_SSID = re.compile(r"^[A-Za-z0-9._-]{1,32}$")
 RE_SENHA = re.compile(r"^[A-Za-z0-9!@#$%^&*()_+=,.:;<>\[\]{}|~-]{8,63}$")
+
+
+def perfil_de(saida):
+    """Le o onu-type na resposta de 'show gpon onu detail-info'.
+
+    A linha e do tipo "  Type:                 F670L"."""
+    for linha in (saida or "").splitlines():
+        limpa = linha.strip()
+        if limpa.startswith("Type:"):
+            resto = limpa[len("Type:"):].strip()
+            if resto:
+                return resto.split()[0]
+    return None
+
+
+def perfil_serve(perfil):
+    """O perfil declara as duas bandas? Ver PERFIS_OK."""
+    return "*" in PERFIS_OK or perfil in PERFIS_OK
+
+
+def _e_paginador(linha):
+    """A OLT para a saida de 'show' num aviso do tipo "---- More ----"."""
+    return "More" in linha and "--" in linha
+
+
+# O mesmo aviso, para tirar do texto. Precisa ser recortado do MEIO da linha, e
+# nao a linha inteira: depois da tecla a OLT continua escrevendo logo em seguida,
+# entao o resto da saida chega colado no aviso.
+RE_PAGINADOR = re.compile("-+ *More *-+")
 
 
 def validar(corpo):
@@ -94,16 +142,27 @@ def montar_comandos(d):
 # -------------------------------------------------------------------- SSH
 def _ler(canal, ate=2.0):
     """Le o que a OLT devolveu. O CLI e interativo e nao tem marcador de fim
-    confiavel, entao a leitura e por silencio: para quando nao chega mais nada."""
+    confiavel, entao a leitura e por silencio: para quando nao chega mais nada.
+
+    Saida de 'show' e mais alta que a tela e para no paginador, esperando uma
+    tecla. Sem responder a ele, a leitura fica parada ate estourar o tempo e volta
+    cortada pela metade - por isso a conferencia de perfil precisou disto."""
     saida = ""
     fim = time.time() + ate
     while time.time() < fim:
         if canal.recv_ready():
-            saida += canal.recv(65535).decode("utf-8", "replace")
+            pedaco = canal.recv(65535).decode("utf-8", "replace")
+            saida += pedaco
+            if any(_e_paginador(l) for l in pedaco.splitlines()):
+                canal.send(" ")
             fim = time.time() + 0.4
         else:
             time.sleep(0.05)
-    return saida
+    # O aviso vira quebra de linha: o que a OLT escreveu depois dele e conteudo.
+    # O CLI ainda apaga o aviso na tela com retorno de carro e backspace, e esses
+    # caracteres atrapalham quem for ler linha a linha.
+    limpo = RE_PAGINADOR.sub("\n", saida)
+    return limpo.replace("\r", "").replace("\x08", "")
 
 
 def aplicar(d):
@@ -121,6 +180,18 @@ def aplicar(d):
     try:
         canal = cli.invoke_shell(width=200, height=200)
         _ler(canal, 3.0)  # banner de login
+
+        # Primeiro olhar, depois escrever. Um 'show' nao altera nada, e e o que
+        # separa "recusei sem tocar em nada" de "mudei metade e disse que nao
+        # mudei". Ver PERFIS_OK.
+        canal.send("show gpon onu detail-info " + d["onu"] + "\n")
+        perfil = perfil_de(_ler(canal, 4.0))
+        if perfil is None:
+            log.error("nao consegui ler o perfil de %s", d["onu"])
+            return False, "perfil_ilegivel"
+        if not perfil_serve(perfil):
+            log.error("perfil %s nao declara a banda de 5 GHz", perfil)
+            return False, "perfil_sem_5g:" + perfil
 
         for cmd in montar_comandos(d):
             canal.send(cmd + "\n")
@@ -208,8 +279,9 @@ def main():
         log.error("faltam variaveis de ambiente: %s", ", ".join(faltando))
         raise SystemExit(1)
 
-    log.info("ouvindo na porta %d | olt=%s | 2.4=%s | 5g=%s",
-             PORTA, OLT_HOST, WIFI_24, WIFI_5G)
+    log.info("ouvindo na porta %d | olt=%s | 2.4=%s | 5g=%s | perfis=%s",
+             PORTA, OLT_HOST, WIFI_24, WIFI_5G,
+             "todos" if "*" in PERFIS_OK else ",".join(PERFIS_OK))
     ThreadingHTTPServer(("0.0.0.0", PORTA), Handler).serve_forever()
 
 

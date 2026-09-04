@@ -132,6 +132,7 @@ services:
       # sao 5 GHz nas ONUs ZTE. Muda por modelo, entao e configuravel.
       OLT_WIFI_IF_24: ${OLT_WIFI_IF_24:-wifi_0/1}
       OLT_WIFI_IF_5G: ${OLT_WIFI_IF_5G:-wifi_0/5}
+      OLT_PERFIS_OK: ${OLT_PERFIS_OK:-RCNET-HGU,RCNET-HW}
     # Sem "ports:": quem alcanca este servico e o n8n, pela rede interna.
     networks: [botsgp]
 

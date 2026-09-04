@@ -60,6 +60,34 @@ Dois caracteres merecem atenção especial no CLI da ZTE, e por isso não passam
 O bot aplica as mesmas regras na hora da digitação, para o cliente ser avisado
 antes de escolher tudo — e não depois de confirmar.
 
+## A conferência de perfil
+
+Antes de escrever qualquer coisa, o serviço roda um `show` e lê o `onu-type` da
+ONU. Se ele não estiver na lista de `OLT_PERFIS_OK`, o pedido é recusado sem que
+nada tenha sido tocado.
+
+A razão é uma armadilha específica. A OLT só aceita escrever num índice de Wi-Fi
+que o perfil da ONU **declara**, e os perfis antigos declaram só o de 2.4 GHz.
+Como os comandos aplicam em sequência, sem a conferência aconteceria isto:
+
+```
+ssid ctrl wifi_0/1 name X     -> aplicou, a rede do assinante MUDOU
+ssid auth wpa wifi_0/1 key Y  -> aplicou, a senha MUDOU
+ssid ctrl wifi_0/5 name X     -> %Error 223845: UNI does not exist
+```
+
+O serviço devolveria `ok: false`, o bot diria ao cliente que a rede continua como
+estava, e a pessoa teria acabado de perder o Wi-Fi de casa — com os aparelhos de
+5 GHz ainda na senha antiga. "Mudou e não mudou" é o pior desfecho possível para
+quem atende.
+
+Recusar sem ter tocado em nada é honesto. Aplicar metade não é.
+
+Enquanto a base não estiver migrada, a maioria dos pedidos vai cair aqui, e o bot
+transforma cada um em chamado no SGP com a identidade já validada e a senha
+escolhida — o técnico aplica e avisa. O motivo vai junto (`perfil_sem_5g:F670L`),
+para quem atender saber que é migração de perfil, não defeito.
+
 ## O que nunca vai para o log
 
 A senha. Nem no pedido, nem na resposta de erro. O log registra a ONU, se o nome
@@ -74,6 +102,7 @@ Tudo por variável de ambiente, no `.env` da raiz do projeto (ver `.env.example`
 | `OLT_HOST`, `OLT_PORT`, `OLT_USER`, `OLT_PASS` | acesso à OLT |
 | `OLT_WIFI_TOKEN` | token compartilhado com o n8n |
 | `OLT_WIFI_IF_24`, `OLT_WIFI_IF_5G` | índices de SSID por banda |
+| `OLT_PERFIS_OK` | perfis que declaram as duas bandas (`*` desliga a conferência) |
 
 Sobre `OLT_WIFI_IF_*`: nas ZTE testadas em campo, as SSIDs 1-4 são da rádio de
 2.4 GHz e 5-8 da de 5 GHz — `wifi_0/1` e `wifi_0/5` são as principais de cada
@@ -98,7 +127,17 @@ provedor. Antes de ativar o modo `olt`, resolva como essa conexão acontece:
 **Não exponha a gerência da OLT na internet sem restrição de origem.** É a caixa
 que controla a rede inteira.
 
-**3. Teste o caminho** antes de ligar o modo no bot:
+**3. Rode os testes.** Eles não precisam de OLT nem de rede:
+
+```bash
+python3 olt-wifi/test-servico.py
+```
+
+Cobrem a validação, a montagem dos comandos, a leitura do perfil e — o que mais
+importa — que um perfil sem 5 GHz é recusado **sem nenhum comando de `ssid` ter
+sido enviado**.
+
+**4. Teste o caminho** antes de ligar o modo no bot:
 
 ```bash
 docker compose up -d --build olt-wifi
