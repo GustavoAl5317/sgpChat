@@ -1,5 +1,10 @@
 # Troca de Wi-Fi — estado de campo (31/08/2026)
 
+> **Leia antes:** este documento tem duas partes. A de cima é de 31/08/2026 e
+> várias conclusões dela foram **derrubadas em campo**. A parte de baixo,
+> *Atualização de campo — 04/09/2026*, é a que vale. Ela diz exatamente o que
+> mudou e por quê.
+
 Registro do que foi descoberto e alterado em campo no dia 31/08/2026, quando o
 projeto saiu do papel e foi testado na rede real.
 
@@ -249,3 +254,159 @@ mudanças de esquema.
 
 Enquanto isso, `WIFI_MODO=chamado` segue no ar e atendendo: o assinante se
 identifica, escolhe o que quer, e a equipe recebe o pedido pronto.
+
+---
+---
+
+# Atualização de campo — 04/09/2026
+
+Um dia inteiro na rede real. Várias conclusões do dia 31/08 caíram.
+
+## O 5 GHz está resolvido
+
+A causa era a que o documento suspeitava: o `onu-type`. O perfil `F670L` declara
+uma única porta Wi-Fi, e a OLT recusa qualquer índice que o perfil não declare.
+
+Foi criado o perfil `RCNET-HGU`, idêntico ao `F670L` nos limites, mas declarando
+`wifi_0/1` a `wifi_0/8` e com `ex-omci enable`. Com a ONU migrada para ele, os
+comandos nas duas bandas passam a ser aceitos:
+
+```
+pon-onu-mng gpon_onu-1/2/2:1
+ssid ctrl wifi_0/1 name NomeDaRede     <- 2.4 GHz
+ssid auth wpa wifi_0/1 key SenhaDaRede
+ssid ctrl wifi_0/5 name NomeDaRede     <- 5 GHz
+ssid auth wpa wifi_0/5 key SenhaDaRede
+```
+
+Ou seja: **o caminho pela OLT entrega o produto completo**, nas duas bandas, sem
+ACS. É o caminho principal do projeto.
+
+## Migrar o `onu-type` não quebra o assinante — se a restauração for completa
+
+A migração exige `no onu` e recriar, o que derruba a conexão por alguns minutos.
+O que quebra de verdade é restaurar pela metade.
+
+**Foi isso que tirou dois clientes do ar** nos testes. O sintoma na ONT é
+"Motivo da desconexão: ISP Timeout", que engana: parece problema de PPPoE e é
+falta do `service-port`, que traduz a VLAN do assinante para a do uplink e é
+apagado junto com a ONU.
+
+A fórmula da VLAN de uplink desta rede:
+
+```
+VLAN = 10 + (slot - 1) * 16 + pon
+```
+
+`1/1/1` -> 11, `1/1/2` -> 12, `1/2/2` -> 28.
+
+### Receita completa de migração (validada, sem queda residual)
+
+Antes de mexer, capture o que existe — nunca restaure de memória:
+
+```
+configure terminal
+interface gpon_olt-1/2/2
+show this
+exit
+interface gpon_onu-1/2/2:1
+show this
+exit
+pon-onu-mng gpon_onu-1/2/2:1
+show this
+exit
+interface vport-1/2/2.1:1
+show this
+exit
+```
+
+Depois:
+
+```
+configure terminal
+interface gpon_olt-1/2/2
+no onu 1
+onu 1 type RCNET-HGU sn ZTEGDA11A47B
+exit
+interface gpon_onu-1/2/2:1
+tcont 1 profile SMARTOLT-1G-UP
+gemport 1 tcont 1
+exit
+pon-onu-mng gpon_onu-1/2/2:1
+service vlan200 gemport 1 vlan 200
+veip 1
+exit
+interface vport-1/2/2.1:1
+service-port 1 user-vlan 200 vlan 28
+qos traffic-policy SMARTOLT-1G-DOWN direction egress
+exit
+exit
+write
+```
+
+Conferência — os três precisam estar certos:
+
+```
+show gpon onu detail-info gpon_onu-1/2/2:1    -> Config state: success
+show service-port interface gpon_onu-1/2/2:1  -> Status OK / Enable YES
+```
+
+E no BNG, que a sessão voltou:
+
+```
+show pppoe session | include <mac do assinante>
+```
+
+### O `ex-omci` não pode ser ligado num tipo em uso
+
+```
+onu-type F670L gpon ... ex-omci enable
+%Error 230296: Profile is being used.
+```
+
+Não há atalho: para mudar as características do perfil é preciso migrar as ONUs
+para um perfil novo, uma a uma.
+
+## TR-069: o que funciona e o que não funciona
+
+| caminho | resultado |
+|---|---|
+| Configurado **na interface do aparelho** | **funciona** — registrou no GenieACS e respondeu `GetParameterValues` |
+| Provisionado **pela OLT** (`tr069-mgmt` por OMCI) | **não funciona** neste firmware |
+
+Pela OLT, mesmo com `ex-omci enable`, `mgmt-ip` entregue (a ONT aparece em
+`show mac vlan 600`), `tr069-mgmt` gravado e o ACS acessível da internet, o
+aparelho nunca abre sessão CWMP.
+
+Como configurar na interface exige acesso ao aparelho de cada assinante, o
+TR-069 fica como **caminho para instalações novas**, não para a base existente.
+
+### Conclusões do dia 31/08 que caíram
+
+- **"A configuração manual de TR-069 não funcionou."** Funcionou. O servidor do
+  ACS estava fora do ar naquele momento e ficou fora o dia todo. O aparelho
+  registrou assim que o servidor voltou.
+- **"`Extended OMCI: disable` impede o `mgmt-ip` de chegar."** Não impede — a
+  ONT recebeu o IP de gerência e apareceu na VLAN 600 com o perfil antigo.
+- **"O TR-069 precisa da VLAN de gerência."** Não precisa. O aparelho que
+  registrou chegou ao ACS pela internet do próprio assinante, saindo pelo CGNAT.
+  A VLAN 600, o `mgmt-ip` e o service-port de gerência não são requisito.
+
+## Ainda não provado
+
+**Wi-Fi por OMCI em ONT Huawei**, que é 85% do parque. Tudo o que foi provado
+até aqui foi em ZTE. Os perfis `hg8145v5` e `-v2` não declaram porta Wi-Fi
+nenhuma, então antes do teste é preciso um perfil equivalente ao `RCNET-HGU`
+para eles. Este é o item que decide a cobertura real do projeto.
+
+## Pendências abertas
+
+- **Contrato 466** (`gpon_onu-1/1/1:4`, `ZTEGD420E6A8`) segue fora do ar por
+  falta de `service-port`. Restaurar com `service-port 1 user-vlan 200 vlan 11`
+  e a política de QoS de egresso.
+- Limpar sobras dos testes: `tr069-mgmt` e `security-mgmt` deixados em
+  `gpon_onu-1/2/2:2` e em `souza073` (`gpon_onu-1/1/2:19`).
+- Remover o preset padrão do GenieACS que tenta escrever
+  `ManagementServer.PeriodicInformTime` — o firmware recusa com `9007` e suja
+  todas as sessões.
+- Gerar o script de migração de perfil da base a partir do `running-config`.
