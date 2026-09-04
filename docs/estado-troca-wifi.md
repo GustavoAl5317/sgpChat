@@ -392,12 +392,53 @@ TR-069 fica como **caminho para instalações novas**, não para a base existent
   registrou chegou ao ACS pela internet do próprio assinante, saindo pelo CGNAT.
   A VLAN 600, o `mgmt-ip` e o service-port de gerência não são requisito.
 
-## Ainda não provado
+## Huawei nao aceita Wi-Fi por OMCI — testado, e a resposta e nao
 
-**Wi-Fi por OMCI em ONT Huawei**, que é 85% do parque. Tudo o que foi provado
-até aqui foi em ZTE. Os perfis `hg8145v5` e `-v2` não declaram porta Wi-Fi
-nenhuma, então antes do teste é preciso um perfil equivalente ao `RCNET-HGU`
-para eles. Este é o item que decide a cobertura real do projeto.
+Medido em 04/09/2026 na ONU `gpon_onu-1/1/1:19` (`HWTC611D44AC`, Huawei em
+bridge, sem contrato vinculado):
+
+| passo | `Config state` |
+|---|---|
+| perfil original `F670L` | `success` |
+| migrada para `RCNET-HW` | `success` |
+| `ssid ctrl wifi_0/1 name TesteHuawei` | **`fail`** |
+| recriada limpa em `RCNET-HW` | `success` |
+| `ssid ctrl wifi_0/1` sozinho, de novo | **`fail`** |
+
+Duas coisas ficam separadas por esse teste:
+
+- **A migração de perfil funciona em Huawei.** O aparelho aceitou um perfil que
+  declara oito portas de Wi-Fi e uma de telefone que ele não tem.
+- **O comando de Wi-Fi não funciona.** A OLT aceita no CLI, manda por OMCI, e a
+  ONT rejeita. Nem 2.4 GHz. O índice também não é questão de mapeamento: foi
+  testado o `wifi_0/1` isolado, que é o primeiro de qualquer fabricante.
+
+A explicação é que `ssid ctrl` e `ssid auth` são extensões proprietárias da ZTE.
+Equipamento ZTE entende; Huawei não tem obrigação de entender, e não entende.
+
+A ONU do teste foi devolvida ao perfil `F670L` original.
+
+### O que isso faz com a cobertura
+
+| | ONUs | automação pela OLT |
+|---|---|---|
+| ZTE (serial `ZTEG`) | 65 | **sim** |
+| Huawei (serial `HWTC`) | 348 | não |
+
+Cerca de **16% da base** pode ter a senha do Wi-Fi trocada pelo bot sozinho. O
+resto continua atendido — o bot valida a identidade, coleta o pedido e abre
+chamado no SGP com a senha escolhida — mas depende de alguém aplicar.
+
+A conferência de perfil do `olt-wifi` já produz exatamente esse comportamento:
+ONU em perfil antigo é recusada sem nada ter sido tocado, e o pedido vira
+chamado. Nenhuma mudança de código é necessária por causa deste resultado.
+
+### O que restaria tentar para a Huawei
+
+TR-069 configurado **no aparelho** funciona — foi assim que o F6600P do Ygson
+registrou no ACS e obedeceu a um `SetParameterValues`. Mas a habilitação é um a
+um, na interface web de cada ONT, e por isso não serve para migrar a base. Serve
+para instalação nova, onde o técnico já está com o aparelho na mão.
 
 ## Pendências abertas
 
@@ -409,7 +450,6 @@ para eles. Este é o item que decide a cobertura real do projeto.
 - Remover o preset padrão do GenieACS que tenta escrever
   `ManagementServer.PeriodicInformTime` — o firmware recusa com `9007` e suja
   todas as sessões.
-- Testar Wi-Fi por OMCI numa ONT **Huawei** — decide se a cobertura é 183 ou 409.
 
 ## A migração da base
 
