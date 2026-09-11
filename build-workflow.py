@@ -840,8 +840,21 @@ session_patch.senha_new = undefined;
 session_patch.ssid_new = undefined;
 session_patch.wifi_alvo = undefined;
 
-const acs = prev.sgp_action === 'definir_wifi_acs';
-const olt = prev.sgp_action === 'definir_wifi_olt';
+// A via (ACS ou OLT) NAO pode sair do sgp_action do Parse & Route: no modo auto
+// a decisao acontece depois, em "Montar Troca na OLT" (ZTE->olt, Huawei->acs),
+// e aquele valor fica defasado - tratar uma resposta do ACS como se fosse da
+// OLT faz o 202 (tarefa enfileirada, normal atras de CGNAT) virar "falhou" e o
+// cliente ir para o atendente sem motivo. A via real e dita por qual node de
+// montagem rodou e o que ele produziu.
+let acs = false, olt = false;
+try { acs = !!(($('Montar Tarefa Wifi').first().json) || {}).acs_device_id; } catch (e) { acs = false; }
+if (!acs) {
+  try { olt = (($('Montar Troca na OLT').first().json) || {}).wifi_rota === 'olt'; } catch (e) { olt = false; }
+}
+if (!acs && !olt) {          // modos explicitos, sem os nodes de montagem do auto
+  acs = prev.sgp_action === 'definir_wifi_acs';
+  olt = prev.sgp_action === 'definir_wifi_olt';
+}
 const ssidNovo = prev.sgp_payload && prev.sgp_payload.ssid;
 const senhaNova = prev.sgp_payload && prev.sgp_payload.senha;
 

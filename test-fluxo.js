@@ -1026,6 +1026,22 @@ check(alvHw.some(function (c) { return /WLANConfiguration\.1\.PreSharedKey\.1\.K
       alvHw.some(function (c) { return /WLANConfiguration\.5\.PreSharedKey\.1\.KeyPassphrase$/.test(c); }),
       'Huawei: senha nas duas bandas pelo PreSharedKey.1.KeyPassphrase');
 check(/Pronto!/.test(ro.reply), 'Huawei com ACS aplica na hora');
+check(ro.audit && ro.audit.resposta_sgp && ro.audit.resposta_sgp.via === 'genieacs',
+      'auditoria do auto-Huawei marca via genieacs, nao olt');
+
+// --- Huawei atras de CGNAT: o ACS responde 202 (tarefa enfileirada) ---
+// O ACS nao alcanca o aparelho na hora, entao a tarefa fica na fila e aplica no
+// proximo Inform. Isso e o NORMAL do parque (CGNAT), nao um erro: o cliente e
+// avisado que vai aplicar em instantes, e NAO vai para o atendente. Foi o bug
+// que o teste no n8n real pegou - o 202 virava handoff por ler a via errada.
+so = ateConfirmarOlt('3', ['RedeHW', 'SenhaHW202']);
+ro = turn(so, '1', PHONE_OK, null, null, null, null,
+          { busca: ACHOU_HW, aplicar: { statusCode: 202, body: {} } },
+          { lista: [onuOlt(2, 2, 3, 'HWTC1FC5E5AB')] });
+check(ro.step === 'menu', 'Huawei 202 (CGNAT) -> volta ao menu, nao ao atendente');
+check(!/atendente/.test(ro.reply || ''), 'Huawei 202 nao manda para atendente');
+check(/agendad|assim que|voltar a se comunicar/i.test(ro.reply || ''),
+      'Huawei 202 avisa que a troca foi agendada');
 
 // --- Huawei SEM ACS: serial HWTC mas device ausente -> OS de habilitacao ---
 pedidoHw = null;
