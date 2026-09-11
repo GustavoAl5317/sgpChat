@@ -178,6 +178,7 @@ const SECOES=[
   {id:'conv', ic:'💬', rot:'Conversas'},
   {id:'atend',ic:'📋', rot:'Atendimentos'},
   {id:'cliente',ic:'🔎', rot:'Consultar cliente'},
+  {id:'semnet',ic:'📡', rot:'Sem internet'},
   {id:'resumo',ic:'📊', rot:'Resumo'},
   {id:'users',ic:'👥', rot:'Usuários', admin:true},
 ];
@@ -202,7 +203,7 @@ function sair2(){ sair(); }
 function irPara(id){
   SECAO=id;
   document.querySelectorAll('.rail button[data-id]').forEach(b=>b.classList.toggle('on',b.dataset.id===id));
-  ({conv:telaConversas,atend:telaAtend,cliente:telaCliente,resumo:telaResumo,users:telaUsers}[id])();
+  ({conv:telaConversas,atend:telaAtend,cliente:telaCliente,semnet:telaSemNet,resumo:telaResumo,users:telaUsers}[id])();
 }
 
 /* ============ CONVERSAS (principal) ============ */
@@ -329,6 +330,20 @@ async function buscarCliente(){
     }
     $('#cl-res').innerHTML=h;
   }catch(e){ $('#cl-res').innerHTML='<div class="vazio">'+(e.message==='sgp_indisponivel'?'SGP indisponível.':'Erro na consulta.')+'</div>'; }
+}
+
+/* ============ SEM INTERNET (em desenvolvimento) ============ */
+function telaSemNet(){
+  $('#main').innerHTML='<div class="conteudo"><h2>Clientes sem internet</h2>'+
+    '<p class="sub">Quem está offline agora, com nome, contrato e caixa (CTO).</p>'+
+    '<div class="card" style="max-width:560px;text-align:center;padding:40px 24px">'+
+      '<div style="font-size:44px;opacity:.6">🚧</div>'+
+      '<h3 style="margin:12px 0 6px">Em desenvolvimento</h3>'+
+      '<p class="rot">Esta tela vai mostrar, em tempo real, os clientes sem conexão — '+
+      'lendo o estado das ONUs na OLT e cruzando com o cadastro do SGP. '+
+      'Também vai apontar quando vários da mesma caixa caem juntos (queda de CTO).</p>'+
+      '<p class="rot" style="margin-top:14px;font-size:12px">Disponível em breve.</p>'+
+    '</div></div>';
 }
 
 /* ============ RESUMO ============ */
