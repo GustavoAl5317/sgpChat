@@ -59,6 +59,35 @@ function inbound(text, phone) {
 // `espiar` recebe o sgp_payload montado, para os testes conferirem o corpo que
 // sairia para o SGP - o node de HTTP nao roda aqui, entao e o unico ponto onde
 // da para verificar que campo nenhum viaja vazio.
+// Reproduz o sub-fluxo do ACS: montar a tarefa -> Switch "Rota do ACS".
+//   aplicar  -> Processar Definir Wifi
+//   chamado  -> Wifi Vira Chamado (Huawei sem TR-069 no modo auto)
+//   handoff  -> ACS Nao Aplicou (erro real do ACS)
+// `origem` e o json que chega na busca do device (o Parse & Route, ou o
+// resultado de "Montar Troca na OLT" quando o modo auto encaminhou para ca).
+function corrida_acs(origem, acs, espiar, olt) {
+  // Devolve { r, montado } - o montado e a saida de "Montar Tarefa Wifi", que os
+  // testes inspecionam (acs_task, acs_device_id...).
+  const montado = run('Montar Tarefa Wifi',
+                      [(acs && acs.busca) || { statusCode: 200, body: [] }],
+                      { 'Parse & Route': origem });
+  let r;
+  if (montado.wifi_rota_acs === 'aplicar') {
+    r = run('Processar Definir Wifi',
+            [(acs && acs.aplicar) || { statusCode: 200, body: {} }],
+            { 'Parse & Route': origem, 'Montar Tarefa Wifi': montado });
+  } else if (montado.wifi_rota_acs === 'chamado') {
+    // A propria "Montar Tarefa Wifi" ja montou o payload de chamado; o node
+    // "Wifi Vira Chamado" so repassa. Reproduzimos indo direto ao Processar.
+    if (espiar) espiar(montado.sgp_payload);
+    r = run('Processar Chamado', [(olt && olt.chamado) || { protocolo: '900001' }],
+            { 'Parse & Route': origem, 'Wifi Vira Chamado': montado });
+  } else {
+    r = run('ACS Nao Aplicou', [montado], {});
+  }
+  return { r: r, montado: montado };
+}
+
 function turn(sessionRow, text, phone, sgpResponse, faturas, diag, espiar, acs, olt) {
   let montado = null;
   const inb = inbound(text, phone);
@@ -80,30 +109,32 @@ function turn(sessionRow, text, phone, sgpResponse, faturas, diag, espiar, acs, 
   } else if (r.sgp_action === 'abrir_chamado') {
     r = run('Processar Chamado', [sgpResponse], { 'Parse & Route': r });
   } else if (r.sgp_action === 'definir_wifi_olt') {
-    // Caminho da OLT: achar a ONU no SGP -> montar o endereco -> aplicar.
+    // Caminho da OLT/auto: achar a ONU no SGP -> "Montar Troca na OLT" decide a
+    // rota pela marca (Switch "Rota do Wi-Fi"): olt, acs ou chamado.
     montado = run('Montar Troca na OLT', [(olt && olt.lista) || []], { 'Parse & Route': r });
-    const aplicou = (olt && olt.aplicar) || { statusCode: 200, body: { ok: true } };
-    if (montado.olt_onu && aplicou.body && aplicou.body.ok === true) {
-      r = run('Processar Definir Wifi', [aplicou],
-              { 'Parse & Route': r, 'Montar Troca na OLT': montado });
+    if (montado.wifi_rota === 'acs') {
+      // Modo auto identificou uma Huawei: segue para o ACS reusando o serial.
+      const cx = corrida_acs(montado, acs, espiar, olt); r = cx.r; montado = cx.montado;
+    } else if (montado.wifi_rota === 'olt') {
+      const aplicou = (olt && olt.aplicar) || { statusCode: 200, body: { ok: true } };
+      if (aplicou.body && aplicou.body.ok === true) {
+        r = run('Processar Definir Wifi', [aplicou],
+                { 'Parse & Route': r, 'Montar Troca na OLT': montado });
+      } else {
+        const vira = run('Wifi Vira Chamado', [montado], { 'OLT - Trocar Wifi': aplicou });
+        if (espiar) espiar(vira.sgp_payload);
+        r = run('Processar Chamado', [(olt && olt.chamado) || { protocolo: '900001' }],
+                { 'Parse & Route': r, 'Wifi Vira Chamado': vira });
+      }
     } else {
-      // Nao deu para aplicar: o pedido vira chamado, nao vai para o atendente.
-      const vira = run('Wifi Vira Chamado', [montado], { 'OLT - Trocar Wifi': aplicou });
+      // chamado: nao achei a ONU ou faltou dado.
+      const vira = run('Wifi Vira Chamado', [montado], {});
       if (espiar) espiar(vira.sgp_payload);
       r = run('Processar Chamado', [(olt && olt.chamado) || { protocolo: '900001' }],
               { 'Parse & Route': r, 'Wifi Vira Chamado': vira });
     }
   } else if (r.sgp_action === 'definir_wifi_acs') {
-    // Caminho da NBI: buscar o device -> montar a tarefa -> aplicar. O IF
-    // "Da para aplicar no ACS?" e reproduzido aqui pelo teste de acs_device_id.
-    montado = run('Montar Tarefa Wifi', [(acs && acs.busca) || { statusCode: 200, body: [] }],
-                  { 'Parse & Route': r });
-    if (!montado.acs_device_id) {
-      r = run('ACS Nao Aplicou', [montado], {});
-    } else {
-      r = run('Processar Definir Wifi', [(acs && acs.aplicar) || { statusCode: 200, body: {} }],
-              { 'Parse & Route': r, 'Montar Tarefa Wifi': montado });
-    }
+    const cx = corrida_acs(r, acs, espiar, olt); r = cx.r; montado = cx.montado;
   }
 
   // Diagnostico encadeia: buscar ONU -> detalhe -> info
@@ -956,6 +987,74 @@ check(!mm.olt_onu && mm.olt_falha === 'onu_nao_encontrada',
 ENV = {};
 td = turn(null, 'oi', PHONE_OK);
 check(/Alterar nome\/senha do Wi-Fi/.test(td.reply), 'sem a variavel, o padrao e aplicar pelo ACS');
+
+
+// ============ Modo auto: decide por aparelho (ZTE->OLT, Huawei->ACS) ============
+// O bot olha o serial da ONU e escolhe o caminho sozinho. E o que permite um
+// numero so atender as duas marcas.
+console.log('\n=== Modo auto: ZTE pela OLT, Huawei pelo ACS ===');
+ENV = { WIFI_MODO: 'auto' };
+
+// Uma ONU de device ja no ACS, para o caminho Huawei-com-ACS.
+function deviceHuawei(id) {
+  return { _id: id || 'HW-1', _deviceId: { _SerialNumber: '485754431FC5E5AB',
+             _ProductClass: 'HG8145V5' },
+           InternetGatewayDevice: { LANDevice: { '1': { WLANConfiguration: {
+             '1': rede('2.4GHz', { pskKp: true }), '5': rede('5GHz', { pskKp: true }) } } } } };
+}
+const ACHOU_HW = { statusCode: 200, body: [deviceHuawei()] };
+const SEM_DEVICE = { statusCode: 200, body: [] };
+
+// --- ZTE: serial ZTEG -> vai pela OLT e aplica na hora ---
+so = ateConfirmarOlt('1', ['NomeZTE']);
+ro = turn(so, '1', PHONE_OK, null, null, null, null, { busca: ACHOU_HW },
+          { lista: [onuOlt(2, 2, 1, 'ZTEGDA11A47B')], aplicar: APLICOU_OLT });
+check(ro.montado.wifi_rota === 'olt', 'serial ZTEG -> rota olt');
+check(ro.montado.olt_onu === 'gpon_onu-1/2/2:1', 'ZTE monta o endereco da OLT');
+check(/Pronto!/.test(ro.reply), 'ZTE aplica na hora');
+
+// --- Huawei COM ACS: serial HWTC -> vai pelo ACS e aplica ---
+let pedidoHw = null;
+so = ateConfirmarOlt('3', ['RedeHW', 'SenhaHW123']);
+ro = turn(so, '1', PHONE_OK, null, null, null, function (pp) { pedidoHw = pp; },
+          { busca: ACHOU_HW, aplicar: { statusCode: 200, body: {} } },
+          { lista: [onuOlt(2, 2, 3, 'HWTC1FC5E5AB')] });
+check(ro.montado.wifi_rota === 'acs', 'serial HWTC -> rota acs');
+check(ro.montado.acs_device_id === 'HW-1', 'Huawei achou o device no ACS');
+const alvHw = (ro.montado.acs_task.parameterValues || []).map(function (x) { return x[0]; });
+check(alvHw.some(function (c) { return /WLANConfiguration\.1\.PreSharedKey\.1\.KeyPassphrase$/.test(c); }) &&
+      alvHw.some(function (c) { return /WLANConfiguration\.5\.PreSharedKey\.1\.KeyPassphrase$/.test(c); }),
+      'Huawei: senha nas duas bandas pelo PreSharedKey.1.KeyPassphrase');
+check(/Pronto!/.test(ro.reply), 'Huawei com ACS aplica na hora');
+
+// --- Huawei SEM ACS: serial HWTC mas device ausente -> OS de habilitacao ---
+pedidoHw = null;
+so = ateConfirmarOlt('3', ['RedeHW', 'SenhaHW456']);
+ro = turn(so, '1', PHONE_OK, null, null, null, function (pp) { pedidoHw = pp; },
+          { busca: SEM_DEVICE },
+          { lista: [onuOlt(2, 2, 3, 'HWTC1FC5E5AB')], chamado: { protocolo: '900123' } });
+check(ro.step === 'menu', 'Huawei sem ACS -> nao vai para o atendente');
+check(/Protocolo/.test(ro.reply || ''), 'Huawei sem ACS -> cliente recebe protocolo');
+check(/TR069_INTERNET/.test(pedidoHw.conteudo || ''),
+      'a OS pede a habilitacao do TR-069 no aparelho');
+check(/SenhaHW456/.test(pedidoHw.conteudo || ''),
+      'a OS leva a senha que o cliente escolheu');
+
+// --- serial desconhecido no modo auto -> chamado ---
+so = ateConfirmarOlt('1', ['NomeX']);
+ro = turn(so, '1', PHONE_OK, null, null, null, null, { busca: SEM_DEVICE },
+          { lista: [onuOlt(2, 2, 5, 'FHTT00001111')], chamado: { protocolo: '900222' } });
+check(ro.montado.wifi_rota === 'chamado', 'serial de outra marca -> chamado');
+check(ro.step === 'menu', 'e o cliente segue atendido');
+
+// --- modo olt puro nao inventa rota acs, mesmo com serial HWTC ---
+ENV = { WIFI_MODO: 'olt' };
+so = ateConfirmarOlt('1', ['NomeY']);
+ro = turn(so, '1', PHONE_OK, null, null, null, null, { busca: ACHOU_HW },
+          { lista: [onuOlt(2, 2, 3, 'HWTC1FC5E5AB')], aplicar: APLICOU_OLT });
+check(ro.montado.wifi_rota === 'olt',
+      'modo olt puro: mesmo Huawei vai para a OLT (nao ativa o caminho auto)');
+ENV = {};
 
 console.log('\n----------------------------------------');
 console.log(ok + ' passaram, ' + fail + ' falharam');

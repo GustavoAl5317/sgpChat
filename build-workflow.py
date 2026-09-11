@@ -547,6 +547,17 @@ switch (step) {
         sgp_action = 'definir_wifi_olt';
         sgp_payload = { contrato: session.contrato, mac: session.mac || '',
                         ssid: p.ssid, senha: p.senha };
+      } else if (WIFI_MODO === 'auto') {
+        // O bot decide por aparelho: ZTE troca pela OLT, Huawei pelo ACS. Mas a
+        // marca so e conhecida depois de buscar a ONU no SGP (o serial vem de
+        // la), entao 'auto' entra pelo mesmo caminho do modo olt - a busca da
+        // ONU - e a decisao acontece em "Montar Troca na OLT", que ja tem o
+        // serial em maos. O login vai junto porque o caminho do ACS precisa
+        // dele para achar o device.
+        sgp_action = 'definir_wifi_olt';
+        sgp_payload = { contrato: session.contrato, mac: session.mac || '',
+                        login: session.login || '', ssid: p.ssid, senha: p.senha,
+                        wifi_auto: true };
       } else if (WIFI_MODO === 'genieacs') {
         // Sem chave de juncao nao ha como identificar o equipamento. Parar
         // aqui e melhor que consultar a NBI sem filtro: uma busca vazia
@@ -961,6 +972,29 @@ function falha(motivo, extra) {
 // (nem toda ONU esta, e nunca vai estar - ver README do genieacs). Mais de um:
 // as chaves de juncao apontaram para equipamentos diferentes, e escolher um
 // seria escrever na casa de outra pessoa. Nos dois casos, nao aplica.
+// Modo auto: a Huawei so entra no ACS depois que a equipe cria a WAN de
+// TR-069 no aparelho. Enquanto isso, o pedido do cliente nao se perde: vira uma
+// OS que ja pede a habilitacao E leva a senha escolhida, para o tecnico fazer as
+// duas coisas de uma vez. Da proxima vez, o cliente ja e automatico.
+if (devices.length === 0 && prev.sgp_payload && prev.sgp_payload.wifi_auto) {
+  const det = ['Solicitacao de troca de Wi-Fi pelo atendimento automatico.',
+    'O equipamento (Huawei) ainda NAO tem gerencia remota (TR-069) habilitada, ' +
+    'por isso a troca nao pode ser feita a distancia.',
+    'ACAO: habilitar o TR-069 no aparelho (criar a WAN de servico ' +
+    'TR069_INTERNET) e aplicar a senha abaixo.'];
+  if (ssid)  det.push('Novo nome da rede: ' + ssid);
+  if (senha) det.push('Nova senha: ' + senha);
+  det.push('Solicitado pelo WhatsApp ' + prev.phone + ', identidade validada.');
+  return [{ json: Object.assign({}, prev, {
+    acs_device_id: null, acs_task: null, acs_falha: 'huawei_sem_tr069',
+    wifi_rota_acs: 'chamado',
+    sgp_action: 'abrir_chamado',
+    sgp_payload: { contrato: prev.sgp_payload.contrato, conteudo: det.join('\n') },
+    wifi_virou_chamado: true,
+    wifi_motivo: 'equipamento sem gerencia remota (TR-069)',
+  }) }];
+}
+
 if (devices.length === 0) return falha('device_nao_encontrado');
 if (devices.length > 1) return falha('device_ambiguo', devices.length);
 
@@ -1066,6 +1100,7 @@ return [{ json: Object.assign({}, prev, {
   acs_task: { name: 'setParameterValues', parameterValues: parametros },
   acs_redes: alvos.map(function (a) { return a.n; }),
   acs_falha: null,
+  wifi_rota_acs: 'aplicar',
 }) }];
 """
 
@@ -1113,7 +1148,29 @@ const prev = $('Parse & Route').first().json;
 function falha(motivo, extra) {
   return [{ json: Object.assign({}, prev, {
     olt_onu: null, olt_falha: motivo, olt_falha_extra: extra || null,
+    wifi_rota: 'chamado',
   }) }];
+}
+
+// Copia local de acsQuery: este node nao compartilha escopo com o Parse & Route.
+// So e usada no modo auto, para o caminho Huawei.
+function montarAcsQuery(login, mac) {
+  const ors = [];
+  const l = String(login || '').trim();
+  if (l) {
+    const fixo = String($env.GENIEACS_LOGIN_PARAM || '').trim();
+    const caminhos = fixo ? [fixo] : [
+      'InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANPPPConnection.1.Username',
+      'Device.PPP.Interface.1.Username'];
+    caminhos.forEach(function (c) { const o = {}; o[c + '._value'] = l; ors.push(o); });
+  }
+  const m = String(mac || '').replace(/[^0-9a-fA-F]/g, '').toUpperCase();
+  if (m.length === 12) {
+    ors.push({ '_deviceId._SerialNumber': m });
+    ors.push({ '_deviceId._SerialNumber': m.match(/.{2}/g).join(':') });
+  }
+  if (!ors.length) return null;
+  return JSON.stringify(ors.length === 1 ? ors[0] : { $or: ors });
 }
 
 // O n8n quebra resposta JSON que e array em VARIOS itens, um por elemento.
@@ -1149,8 +1206,33 @@ if (onus.length === 1) {
 if (!onus.length) return falha('onu_nao_encontrada');
 if (!escolhida) return falha('onu_ambigua', onus.length);
 
-// O chassi e 1 nas OLTs de prateleira unica. Fica configuravel porque quem tiver
-// mais de um chassi vai precisar mudar, e descobrir isso em producao e caro.
+// No modo auto, a MARCA decide o caminho, e o serial GPON diz a marca:
+//   HWTC = Huawei -> so o TR-069 (ACS) troca o Wi-Fi dela
+//   ZTEG = ZTE    -> troca pela OLT
+// A troca de Wi-Fi por OMCI da ZTE nao funciona em Huawei (medido em campo),
+// entao mandar uma Huawei para a OLT so geraria erro. Vai para o ACS.
+const pOlt = prev.sgp_payload || {};
+const serial = String(escolhida.phy_addr || '').toUpperCase();
+if (pOlt.wifi_auto === true) {
+  // Huawei: so o TR-069 (ACS) troca o Wi-Fi dela.
+  if (serial.slice(0, 4) === 'HWTC') {
+    const acsQ = montarAcsQuery(pOlt.login, pOlt.mac);
+    // Sem chave de juncao nao da para achar o device na NBI sem risco de pegar
+    // o errado. Vira chamado, como qualquer outra falta de dado.
+    if (!acsQ) return falha('sem_chave_acs');
+    return [{ json: Object.assign({}, prev, {
+      wifi_rota: 'acs', olt_onu: null, olt_falha: null,
+      sgp_action: 'definir_wifi_acs',
+      sgp_payload: Object.assign({}, pOlt, { acs_query: acsQ }),
+    }) }];
+  }
+  // Fora ZTE, a troca pela OLT (OMCI da ZTE) so foi provada em ZTE. Mandar outra
+  // marca para a OLT so geraria erro; vira chamado para a equipe resolver.
+  if (serial.slice(0, 4) !== 'ZTEG') return falha('marca_nao_suportada', serial.slice(0, 4));
+}
+
+// ZTE (auto) ou modo olt explicito: escreve pela OLT. O chassi e 1 nas OLTs de
+// prateleira unica; fica configuravel porque descobrir isso em producao e caro.
 const shelf = String($env.OLT_SHELF || '1').trim();
 const partes = [escolhida.slot, escolhida.pon, escolhida.onuid];
 if (partes.some(function (v) { return v === null || v === undefined || v === ''; })) {
@@ -1158,6 +1240,7 @@ if (partes.some(function (v) { return v === null || v === undefined || v === '';
 }
 
 return [{ json: Object.assign({}, prev, {
+  wifi_rota: 'olt',
   olt_onu: 'gpon_onu-' + shelf + '/' + partes[0] + '/' + partes[1] + ':' + partes[2],
   olt_falha: null,
 }) }];
@@ -1657,13 +1740,20 @@ nodes = [
     code_node("code-acs-tarefa", "Montar Tarefa Wifi", JS_MONTAR_TAREFA_ACS, [1200, 120]),
 
     {"parameters": {
-        "conditions": {"options": {"caseSensitive": True, "leftValue": "", "typeValidation": "loose"},
-                       "conditions": [{"leftValue": "={{ $json.acs_device_id }}", "rightValue": "",
-                                       "operator": {"type": "string", "operation": "notEmpty",
-                                                    "singleValue": True}}],
-                       "combinator": "and"}, "options": {}},
-     "id": "if-acs", "name": "Da para aplicar no ACS?", "type": "n8n-nodes-base.if",
-     "typeVersion": 2.2, "position": [1400, 120]},
+        "rules": {"values": [
+            {"conditions": {"options": {"caseSensitive": True, "typeValidation": "loose"},
+                            "conditions": [{"leftValue": "={{ $json.wifi_rota_acs }}", "rightValue": "aplicar",
+                                            "operator": {"type": "string", "operation": "equals"}}],
+                            "combinator": "and"},
+             "renameOutput": True, "outputKey": "aplicar"},
+            {"conditions": {"options": {"caseSensitive": True, "typeValidation": "loose"},
+                            "conditions": [{"leftValue": "={{ $json.wifi_rota_acs }}", "rightValue": "chamado",
+                                            "operator": {"type": "string", "operation": "equals"}}],
+                            "combinator": "and"},
+             "renameOutput": True, "outputKey": "chamado"}]},
+        "options": {"fallbackOutput": "extra"}},
+     "id": "switch-rota-acs", "name": "Rota do ACS", "type": "n8n-nodes-base.switch",
+     "typeVersion": 3, "position": [1400, 120]},
 
     # connection_request faz o ACS acordar o equipamento agora em vez de
     # esperar o proximo inform periodico - e o que permite responder ao cliente
@@ -1701,14 +1791,29 @@ nodes = [
 
     code_node("code-montar-olt", "Montar Troca na OLT", JS_MONTAR_OLT, [1200, 340]),
 
+    # Roteia por marca do aparelho (definida em "Montar Troca na OLT"): ZTE vai
+    # para a OLT, Huawei para o ACS, e o que nao deu para resolver vira chamado.
+    # No modo olt puro so saem 'olt' e 'chamado' - o caminho do ACS fica inerte.
     {"parameters": {
-        "conditions": {"options": {"caseSensitive": True, "leftValue": "", "typeValidation": "loose"},
-                       "conditions": [{"leftValue": "={{ $json.olt_onu }}", "rightValue": "",
-                                       "operator": {"type": "string", "operation": "notEmpty",
-                                                    "singleValue": True}}],
-                       "combinator": "and"}, "options": {}},
-     "id": "if-olt", "name": "Achou a ONU na OLT?", "type": "n8n-nodes-base.if",
-     "typeVersion": 2.2, "position": [1400, 340]},
+        "rules": {"values": [
+            {"conditions": {"options": {"caseSensitive": True, "typeValidation": "loose"},
+                            "conditions": [{"leftValue": "={{ $json.wifi_rota }}", "rightValue": "olt",
+                                            "operator": {"type": "string", "operation": "equals"}}],
+                            "combinator": "and"},
+             "renameOutput": True, "outputKey": "olt"},
+            {"conditions": {"options": {"caseSensitive": True, "typeValidation": "loose"},
+                            "conditions": [{"leftValue": "={{ $json.wifi_rota }}", "rightValue": "acs",
+                                            "operator": {"type": "string", "operation": "equals"}}],
+                            "combinator": "and"},
+             "renameOutput": True, "outputKey": "acs"},
+            {"conditions": {"options": {"caseSensitive": True, "typeValidation": "loose"},
+                            "conditions": [{"leftValue": "={{ $json.wifi_rota }}", "rightValue": "chamado",
+                                            "operator": {"type": "string", "operation": "equals"}}],
+                            "combinator": "and"},
+             "renameOutput": True, "outputKey": "chamado"}]},
+        "options": {"fallbackOutput": "extra"}},
+     "id": "switch-rota-wifi", "name": "Rota do Wi-Fi", "type": "n8n-nodes-base.switch",
+     "typeVersion": 3, "position": [1400, 340]},
 
     # O bot NAO fala com a OLT: fala com o servico de olt-wifi/, que e quem tem a
     # credencial e quem monta os comandos. Se este bot for comprometido, o que o
@@ -1913,10 +2018,11 @@ connections = {
     "SGP - Definir Wifi": {"main": [to("Processar Definir Wifi")]},
     "GenieACS - Buscar Device": {"main": [to("Montar Tarefa Wifi")]},
     "SGP - ONU do Contrato": {"main": [to("Montar Troca na OLT")]},
-    "Montar Troca na OLT": {"main": [to("Achou a ONU na OLT?")]},
-    "Achou a ONU na OLT?": {"main": [
-        to("OLT - Trocar Wifi"),         # true: sei em que porta da OLT escrever
-        to("Wifi Vira Chamado"),         # false: nao achei o equipamento
+    "Montar Troca na OLT": {"main": [to("Rota do Wi-Fi")]},
+    "Rota do Wi-Fi": {"main": [
+        to("OLT - Trocar Wifi"),         # olt: ZTE, sei em que porta escrever
+        to("GenieACS - Buscar Device"),  # acs: Huawei no modo auto
+        to("Wifi Vira Chamado"),         # chamado: nao achei / sem dado
     ]},
     "OLT - Trocar Wifi": {"main": [to("Aplicou na OLT?")]},
     "Aplicou na OLT?": {"main": [
@@ -1926,10 +2032,11 @@ connections = {
     # O pedido nao se perde: vira ocorrencia no SGP com identidade ja validada,
     # exatamente como no modo 'chamado'.
     "Wifi Vira Chamado": {"main": [to("SGP - Abrir Chamado")]},
-    "Montar Tarefa Wifi": {"main": [to("Da para aplicar no ACS?")]},
-    "Da para aplicar no ACS?": {"main": [
-        to("GenieACS - Aplicar Wifi"),   # true: achou o device e sei o que escrever
-        to("ACS Nao Aplicou"),           # false
+    "Montar Tarefa Wifi": {"main": [to("Rota do ACS")]},
+    "Rota do ACS": {"main": [
+        to("GenieACS - Aplicar Wifi"),   # aplicar: achou o device
+        to("Wifi Vira Chamado"),         # chamado: Huawei sem TR-069 (modo auto)
+        to("ACS Nao Aplicou"),           # extra/handoff: erro real do ACS
     ]},
     "GenieACS - Aplicar Wifi": {"main": [to("Processar Definir Wifi")]},
     "ACS Nao Aplicou": {"main": [to(PERSIST)]},
