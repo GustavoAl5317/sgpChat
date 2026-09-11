@@ -172,6 +172,22 @@ const FATURAS = { status: 1, razaoSocial: 'ZE DO ALHO', links: [
 ]};
 const SEM_FATURA = { status: 0, razaoSocial: 'PEDRO', links: [] };
 
+// Uma vencida (mes passado), uma do mes atual e uma de mes futuro. A regra do
+// provedor: mostrar vencida + mes atual, nunca a futura. As datas sao relativas
+// a "hoje" para o teste nao envelhecer.
+const _hoje = new Date();
+function _venc(deltaMeses, dia) {
+  const d = new Date(_hoje.getFullYear(), _hoje.getMonth() + deltaMeses, dia || 10);
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' +
+         String(d.getDate()).padStart(2, '0');
+}
+const FATURAS_MIX = { status: 1, razaoSocial: 'MARIA', links: [
+  { fatura: 1, vencimento: _venc(-1), valor: 100, linhadigitavel: 'VENCIDA' },
+  { fatura: 2, vencimento: _venc(0),  valor: 100, linhadigitavel: 'MESATUAL' },
+  { fatura: 3, vencimento: _venc(1),  valor: 100, linhadigitavel: 'FUTURA' },
+  { fatura: 4, vencimento: _venc(2),  valor: 100, linhadigitavel: 'FUTURA2' },
+]};
+
 function ateIdentidade(opcaoMenu, phone, diag) {
   let s = null;
   let t = turn(s, opcaoMenu, phone); s = t.sessionRow;
@@ -279,6 +295,14 @@ function sessaoValidada(idadeMs, extra) {
 t = turn(sessaoValidada(60 * 1000), '2', PHONE_OK, null, FATURAS);
 check(!/CPF/i.test(t.reply || ''), 'identidade recente -> nao pede CPF de novo');
 check(/Vencimento/.test(t.reply || ''), 'identidade recente -> ja mostra as faturas');
+
+// Regra do provedor: vencida + mes atual entram; futuras NUNCA.
+t = turn(sessaoValidada(60 * 1000), '2', PHONE_OK, null, FATURAS_MIX);
+check(/VENCIDA/.test(t.reply || ''), 'boleto: traz a fatura vencida');
+check(/MESATUAL/.test(t.reply || ''), 'boleto: traz a fatura do mes atual');
+check(!/FUTURA/.test(t.reply || ''), 'boleto: NAO traz faturas de meses a frente');
+check(/2\*? faturas|Você tem \*2\*/.test(t.reply || '') || (t.reply||'').match(/VENCIDA/) && (t.reply||'').match(/MESATUAL/),
+      'boleto: conta so as relevantes (2), nao as 4');
 
 t = turn(sessaoValidada(60 * 1000), '1', PHONE_OK);
 check(t.step === 'awaiting_wifi_what', 'identidade recente -> Wi-Fi vai direto ao que alterar');

@@ -206,7 +206,13 @@ async function faturasDoContrato(contrato) {
     });
     const j = await r.json().catch(() => ({}));
     const links = Array.isArray(j && j.links) ? j.links : [];
-    return links.map((f) => ({
+    // Mesma regra do bot: vencidas + mes atual; nunca as de meses a frente.
+    const limiteYM = new Date().getFullYear() * 100 + (new Date().getMonth() + 1);
+    const ymVenc = (iso) => {
+      const m = String(iso || '').match(/^(\d{4})-(\d{2})/);
+      return m ? (Number(m[1]) * 100 + Number(m[2])) : 0;
+    };
+    return links.filter((f) => ymVenc(f.vencimento) <= limiteYM).map((f) => ({
       vencimento: f.vencimento, valor: f.valor, linhadigitavel: f.linhadigitavel || null,
     }));
   } catch (e) { return null; } // null = nao deu para consultar (SGP fora)

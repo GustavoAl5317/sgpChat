@@ -1329,7 +1329,20 @@ const resp = $input.first().json;
 
 // Resposta do SGP: { status, razaoSocial, links: [ {fatura, vencimento, valor,
 // valor_original, linhadigitavel, link, link_cobranca, juros, multa} ] }
-const links = Array.isArray(resp && resp.links) ? resp.links : [];
+const todos = Array.isArray(resp && resp.links) ? resp.links : [];
+
+// Regra do provedor: mostrar as VENCIDAS e a do mes atual; NUNCA as de meses a
+// frente. O SGP pode ter boletos futuros ja gerados, e nao se oferece o cliente
+// pagar adiantado - so o que esta vencido ou vence neste mes.
+function anoMes(d) { return d.getFullYear() * 100 + (d.getMonth() + 1); }
+function ymVenc(iso) {
+  const m = String(iso || '').match(/^(\d{4})-(\d{2})/);
+  // Sem data legivel: trata como antiga (mostra) - some-lo poderia esconder uma
+  // fatura vencida de verdade, o que e pior que mostrar uma a mais.
+  return m ? (Number(m[1]) * 100 + Number(m[2])) : 0;
+}
+const limiteYM = anoMes(new Date());
+const links = todos.filter(function (f) { return ymVenc(f.vencimento) <= limiteYM; });
 
 function brl(v) {
   const n = Number(v || 0);

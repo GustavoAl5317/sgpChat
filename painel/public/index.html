@@ -391,9 +391,29 @@ async function criarUser(){
     telaUsers();
   }catch(e){ $('#u-erro').textContent=e.message==='usuario_ja_existe'?'Usuário já existe.':(e.message==='usuario_ou_senha_curta'?'Usuário e senha (mín. 6).':'Erro.'); }
 }
-async function toggleUser(id,ativo){ await api('/api/usuarios/'+id+'/ativo',{method:'POST',body:JSON.stringify({ativo})}).catch(()=>{}); listarUsers(); }
-async function resetSenha(id){ const s=prompt('Nova senha (mín. 6):'); if(!s) return;
-  try{ await api('/api/usuarios/'+id+'/senha',{method:'POST',body:JSON.stringify({senha:s})}); alert('Senha alterada.'); }catch(e){ alert('Erro (senha curta?).'); } }
+async function toggleUser(id,ativo){
+  if(!ativo && !confirm('Desativar este usuário? Ele não conseguirá mais entrar.')) return;
+  try{
+    await api('/api/usuarios/'+id+'/ativo',{method:'POST',body:JSON.stringify({ativo})});
+    listarUsers();
+  }catch(e){
+    alert(e.message==='nao_desative_a_si'
+      ? 'Você não pode desativar a sua própria conta.'
+      : (e.message==='apenas_admin' ? 'Só um admin pode fazer isso.' : 'Não foi possível alterar (' + e.message + ').'));
+    listarUsers();
+  }
+}
+async function resetSenha(id){
+  const s=prompt('Nova senha (mín. 6 caracteres):'); if(s===null) return;
+  if(s.length<6){ alert('A senha precisa ter ao menos 6 caracteres.'); return; }
+  try{
+    await api('/api/usuarios/'+id+'/senha',{method:'POST',body:JSON.stringify({senha:s})});
+    alert('Senha alterada com sucesso.');
+  }catch(e){
+    alert(e.message==='senha_curta' ? 'A senha precisa ter ao menos 6 caracteres.'
+      : (e.message==='apenas_admin' ? 'Só um admin pode fazer isso.' : 'Não foi possível trocar a senha (' + e.message + ').'));
+  }
+}
 
 iniciar().catch(()=>mostrarLogin());
 </script>
