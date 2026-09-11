@@ -303,10 +303,25 @@ async function buscarCliente(){
     const r=await api('/api/cliente?doc='+doc);
     const cs=(r.sgp&&r.sgp.contratos)||[]; let h='';
     if(!cs.length) h+='<div class="vazio">Nenhum contrato no SGP para esse documento.</div>';
-    cs.forEach(c=>{ h+='<div class="card" style="margin-bottom:12px"><b>'+esc(c.razaoSocial||'')+'</b> '+
+    cs.forEach(c=>{
+      // faturas: array = consultou; null = SGP nao respondeu.
+      const fs=c._faturas; let fatHtml='';
+      if(fs===null||fs===undefined){ fatHtml='<div class="rot" style="margin-top:8px">Faturas: não foi possível consultar agora.</div>'; }
+      else if(!fs.length){ fatHtml='<div style="margin-top:8px"><span class="tag ok">Sem faturas em aberto</span></div>'; }
+      else {
+        const tot=fs.reduce((a,f)=>a+Number(String(f.valor||0).replace(',','.')||0),0);
+        fatHtml='<div style="margin-top:10px"><span class="tag nao">'+fs.length+' fatura'+(fs.length>1?'s':'')+' em aberto</span>'+
+          ' <span class="rot">total R$ '+tot.toFixed(2).replace('.',',')+'</span>'+
+          '<table style="margin-top:8px"><thead><tr><th>Vencimento</th><th>Valor</th><th>Linha digitável</th></tr></thead><tbody>'+
+          fs.map(f=>'<tr><td>'+esc(f.vencimento||'')+'</td><td>R$ '+esc(f.valor||'')+'</td>'+
+            '<td style="font-family:monospace;font-size:11px">'+esc(f.linhadigitavel||'—')+'</td></tr>').join('')+
+          '</tbody></table></div>';
+      }
+      h+='<div class="card" style="margin-bottom:12px"><b>'+esc(c.razaoSocial||'')+'</b> '+
       '<span class="tag '+(c.contratoStatusDisplay==='Ativo'?'ok':'nao')+'">'+esc(c.contratoStatusDisplay||'')+'</span>'+
       '<br><span class="rot">Contrato '+esc(c.contratoId)+' · '+esc(c.servico_login||'')+' · '+esc(c.planointernet||'')+'</span>'+
-      '<br><span class="rot">'+esc([c.endereco_logradouro,c.endereco_numero,c.endereco_bairro,c.endereco_cidade].filter(Boolean).join(', '))+'</span></div>'; });
+      '<br><span class="rot">'+esc([c.endereco_logradouro,c.endereco_numero,c.endereco_bairro,c.endereco_cidade].filter(Boolean).join(', '))+'</span>'+
+      fatHtml+'</div>'; });
     if(r.historico&&r.historico.length){
       h+='<h3 style="color:var(--mut)">Histórico no atendimento</h3><table><thead><tr><th>Quando</th><th>Tipo</th><th>Resultado</th></tr></thead><tbody>'+
         r.historico.map(x=>'<tr><td>'+dt(x.created_at)+'</td><td>'+(TIPOS[x.tipo]||x.tipo)+'</td>'+

@@ -194,7 +194,25 @@ app.get('/api/conversas', autenticar, async (req, res) => {
   }
 });
 
-// ---- Consulta de cliente (SGP + historico no bot) ----
+// Faturas em aberto de um contrato. nao_gerar_os=1: sem isso o SGP abriria uma
+// ordem de servico a cada consulta - o painel so olha, nunca deve gerar OS.
+async function faturasDoContrato(contrato) {
+  try {
+    const body = new URLSearchParams({ app: SGP_APP, token: SGP_TOKEN,
+      contrato: String(contrato), nao_gerar_os: '1' });
+    const r = await fetch(SGP_URL + '/api/ura/fatura2via/', {
+      method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: body, signal: AbortSignal.timeout(15000),
+    });
+    const j = await r.json().catch(() => ({}));
+    const links = Array.isArray(j && j.links) ? j.links : [];
+    return links.map((f) => ({
+      vencimento: f.vencimento, valor: f.valor, linhadigitavel: f.linhadigitavel || null,
+    }));
+  } catch (e) { return null; } // null = nao deu para consultar (SGP fora)
+}
+
+// ---- Consulta de cliente (SGP + faturas + historico no bot) ----
 app.get('/api/cliente', autenticar, async (req, res) => {
   const doc = String(req.query.doc || '').replace(/\D/g, '');
   if (!doc) return res.status(400).json({ erro: 'informe_cpf_cnpj' });
@@ -206,6 +224,11 @@ app.get('/api/cliente', autenticar, async (req, res) => {
       signal: AbortSignal.timeout(15000),
     });
     const sgp = await r.json().catch(() => ({}));
+    const contratos = Array.isArray(sgp && sgp.contratos) ? sgp.contratos : [];
+    // Faturas por contrato, em paralelo. Um cliente costuma ter 1-2 contratos.
+    await Promise.all(contratos.map(async (c) => {
+      c._faturas = await faturasDoContrato(c.contratoId);
+    }));
     const hist = await pool.query(
       'SELECT tipo, sucesso, created_at, resposta_sgp FROM wa_wifi_change_log ' +
       'WHERE cpf=$1 ORDER BY id DESC LIMIT 50', [doc]);
