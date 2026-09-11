@@ -1031,17 +1031,32 @@ for (let i = 0; i < alvos.length; i++) {
     parametros.push([c + '.SSID', ssid, 'xsd:string']);
   }
   if (senha) {
-    // KeyPassphrase e PreSharedKey.1.PreSharedKey convivem e nem todo firmware
-    // aceita os dois; escrever um parametro que o CPE recusa derruba a tarefa
-    // INTEIRA. Por isso so vai o que existe no modelo de dados lido do proprio
-    // equipamento, e quando os dois existem os dois vao com o mesmo valor -
-    // ha modelo que so honra um deles.
+    // A senha do Wi-Fi mora em ate tres lugares no modelo de dados, e escrever
+    // um que o CPE recusa derruba a tarefa INTEIRA (o setParameterValues e
+    // atomico). Medido numa Huawei HG8145V5 em campo (11/09/2026):
+    //   - WLANConfiguration.N.KeyPassphrase           -> recusado (fault 9002)
+    //   - WLANConfiguration.N.PreSharedKey.1.KeyPassphrase -> ACEITO
+    // Ou seja, escrever "todos que existem" nao serve: o KeyPassphrase de cima
+    // aparece como escrivel no modelo e mesmo assim derruba tudo.
+    //
+    // A regra passa a ser: quando ha PreSharedKey.1, a senha vai SO por ele
+    // (KeyPassphrase e/ou PreSharedKey - os que existirem). O KeyPassphrase do
+    // topo so entra quando nao ha PreSharedKey nenhum, que e o caso de firmwares
+    // mais antigos que so tem aquele campo.
     const psk = (a.inst.PreSharedKey || {})['1'] || {};
-    const temKp = escrivel(a.inst.KeyPassphrase);
-    const temPsk = escrivel(psk.PreSharedKey);
-    if (!temKp && !temPsk) return falha('senha_nao_escrivel', a.n);
-    if (temKp) parametros.push([c + '.KeyPassphrase', senha, 'xsd:string']);
-    if (temPsk) parametros.push([c + '.PreSharedKey.1.PreSharedKey', senha, 'xsd:string']);
+    const kpTopo = escrivel(a.inst.KeyPassphrase);
+    const kpPsk = escrivel(psk.KeyPassphrase);
+    const pskPsk = escrivel(psk.PreSharedKey);
+    const temPsk = kpPsk || pskPsk;
+
+    if (temPsk) {
+      if (kpPsk) parametros.push([c + '.PreSharedKey.1.KeyPassphrase', senha, 'xsd:string']);
+      if (pskPsk) parametros.push([c + '.PreSharedKey.1.PreSharedKey', senha, 'xsd:string']);
+    } else if (kpTopo) {
+      parametros.push([c + '.KeyPassphrase', senha, 'xsd:string']);
+    } else {
+      return falha('senha_nao_escrivel', a.n);
+    }
   }
 }
 if (!parametros.length) return falha('nada_a_escrever');

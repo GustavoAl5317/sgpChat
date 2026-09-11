@@ -556,7 +556,14 @@ function rede(banda, o) {
   if (o.semSsid !== true) i.SSID = par('RedeAtual', o.ssidWritable);
   if (banda) i.OperatingFrequencyBand = par(banda);
   if (o.semSenha !== true) i.KeyPassphrase = par('', o.senhaWritable);
-  if (o.psk) i.PreSharedKey = { '1': { PreSharedKey: par('') } };
+  // psk: PreSharedKey.1.PreSharedKey  |  pskKp: PreSharedKey.1.KeyPassphrase
+  // (este ultimo e o unico que a Huawei HG8145V5 aceitou em campo).
+  if (o.psk || o.pskKp) {
+    const inst = {};
+    if (o.psk) inst.PreSharedKey = par('');
+    if (o.pskKp) inst.KeyPassphrase = par('');
+    i.PreSharedKey = { '1': inst };
+  }
   return i;
 }
 function device(redes, id) {
@@ -686,16 +693,42 @@ rd = turn(sa, '1', PHONE_OK, null, null, null, null,
 check(JSON.stringify(rd.montado.acs_redes) === '[1,5]',
       'sem banda informada, muda todas as redes ligadas');
 
-// PreSharedKey e KeyPassphrase convivem e ha modelo que so honra um deles.
+// Quando existe PreSharedKey.1, a senha vai SO por ele - nunca pelo
+// KeyPassphrase do topo. Medido numa Huawei HG8145V5: o KeyPassphrase de cima
+// aparece como escrivel mas derruba a tarefa inteira (fault 9002), enquanto o
+// PreSharedKey.1.KeyPassphrase e aceito.
+sa = ateConfirmar('2', ['SenhaHuawei123']);
+rd = turn(sa, '1', PHONE_OK, null, null, null, null,
+          { busca: { statusCode: 200,
+                     body: [device({ '1': rede('2.4GHz', { pskKp: true }) })] },
+            aplicar: APLICOU });
+const hw = rd.montado.acs_task.parameterValues.map(function (x) { return x[0]; });
+check(hw.some(function (c) { return /PreSharedKey\.1\.KeyPassphrase$/.test(c); }),
+      'usa o PreSharedKey.1.KeyPassphrase que a Huawei aceita');
+check(!hw.some(function (c) { return /WLANConfiguration\.\d+\.KeyPassphrase$/.test(c); }),
+      'NAO manda o KeyPassphrase do topo quando ha PreSharedKey (derruba a tarefa)');
+
+// Os dois campos DENTRO do PreSharedKey convivem: se ambos existem, os dois vao.
 sa = ateConfirmar('2', ['SenhaDupla123']);
 rd = turn(sa, '1', PHONE_OK, null, null, null, null,
           { busca: { statusCode: 200,
-                     body: [device({ '1': rede('2.4GHz', { psk: true }) })] },
+                     body: [device({ '1': rede('2.4GHz', { psk: true, pskKp: true }) })] },
             aplicar: APLICOU });
 const dupla = rd.montado.acs_task.parameterValues.map(function (x) { return x[0]; });
-check(dupla.some(function (c) { return /KeyPassphrase$/.test(c); }) &&
+check(dupla.some(function (c) { return /PreSharedKey\.1\.KeyPassphrase$/.test(c); }) &&
       dupla.some(function (c) { return /PreSharedKey\.1\.PreSharedKey$/.test(c); }),
-      'quando os dois parametros de senha existem, os dois vao');
+      'os dois campos do PreSharedKey vao juntos');
+
+// Firmware antigo que so tem o KeyPassphrase do topo (sem PreSharedKey): ai sim
+// ele e o unico caminho, e deve ser usado.
+sa = ateConfirmar('2', ['SenhaVelha123']);
+rd = turn(sa, '1', PHONE_OK, null, null, null, null,
+          { busca: { statusCode: 200,
+                     body: [device({ '1': rede('2.4GHz') })] },
+            aplicar: APLICOU });
+const velho = rd.montado.acs_task.parameterValues.map(function (x) { return x[0]; });
+check(velho.some(function (c) { return /WLANConfiguration\.1\.KeyPassphrase$/.test(c); }),
+      'sem PreSharedKey, cai no KeyPassphrase do topo');
 
 // --------- Roteador desligado: 202, tarefa na fila ---------
 // Nao e erro e nao e sucesso. O cliente precisa saber que a queda vai chegar

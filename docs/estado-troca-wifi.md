@@ -473,3 +473,75 @@ voltar em `OK/YES`, pare, porque é exatamente o que deixa o assinante com
 Uma ressalva: a linha `mgmt-ip` do `running-config` termina com um `host 1` que
 a própria OLT acrescenta. Se ela recusar esse sufixo na hora de recolocar, tire
 o `host 1` e siga. Só afeta ONUs com gerência configurada, que hoje é uma só.
+
+---
+---
+
+# Atualização de campo — 11/09/2026: Huawei ENTRA, pela WAN TR069_INTERNET
+
+Caiu a conclusão de que Huawei nao tinha caminho. Tem — pelo TR-069, nao pela
+OLT. Provado na ONU da Amanda (HG8145V5, contrato 316, `gpon_onu-1/2/2:3`).
+
+## O que destrava
+
+A Huawei nao emite TR-069 com a WAN de servico so `INTERNET`. Criando no
+aparelho uma WAN de servico **`TR069_INTERNET`** (PPPoE, VLAN 200, mesmo login
+do cliente, SSID1+SSID5 marcados), a ONT registra no ACS em segundos. Confirmado
+por tcpdump: sessao CWMP completa, e o GenieACS leu e escreveu sem erro.
+
+Feito isso, a Huawei entrega TUDO: expoe `WLANConfiguration.1` (2.4 GHz) e
+`.5` (5 GHz), e aceita a troca de senha nas duas.
+
+## O parametro de senha da Huawei
+
+Aqui estava um erro no bot. A senha foi testada por caminho:
+
+| parametro | resultado |
+|---|---|
+| `WLANConfiguration.N.KeyPassphrase` | **recusado** (fault 9002, derruba a tarefa inteira) |
+| `WLANConfiguration.N.PreSharedKey.1.KeyPassphrase` | **aceito** |
+
+O `setParameterValues` e atomico: um parametro ruim derruba todos. O bot mandava
+o `KeyPassphrase` do topo (que aparece escrivel no modelo e mesmo assim derruba)
+junto com o do PreSharedKey. Corrigido: quando existe `PreSharedKey.1`, a senha
+vai SO por ele; o `KeyPassphrase` do topo so entra em firmware antigo que nao
+tem PreSharedKey nenhum.
+
+## O procedimento correto da WAN — UMA, nao duas
+
+O primeiro teste criou uma SEGUNDA WAN (TR069_INTERNET) ao lado da de internet.
+Erro: as duas discam PPPoE com o mesmo login e viram **duas sessoes**, o que
+quebra a navegacao (so sites grandes abrem - sintoma de MTU/rota). 
+
+O certo e ter UMA WAN so, de servico `TR069_INTERNET`, que faz internet E
+gerencia na mesma sessao. Na pratica, na instalacao/visita:
+
+1. apaga a WAN `INTERNET` existente
+2. cria uma nova, servico `TR069_INTERNET`, resto igual (PPPoE, VLAN 200,
+   login do cliente, bind SSID1+SSID5)
+3. Apply
+
+Uma sessao, os dois papeis, sem duplicar.
+
+## Como fica a cobertura
+
+Com isto, as ~348 Huawei passam a ter caminho - mas cada uma precisa da WAN
+`TR069_INTERNET` criada NO APARELHO (nao ha como fazer pela OLT, ja testado). E
+trabalho de instalacao/visita, um toque por aparelho, e dali em diante o bot
+troca a senha sozinho pelo ACS, nas duas bandas. O parque Huawei vira por
+demanda, puxado pelos chamados e instalacoes.
+
+Resumo do parque:
+
+| | como troca a senha | pre-requisito |
+|---|---|---|
+| ZTE (65) | pela OLT, na hora | migrar perfil F670L -> RCNET-HGU |
+| Huawei (348) | pelo ACS (TR-069), ~2 min | criar WAN TR069_INTERNET no aparelho |
+
+## Pendente
+
+- Confirmar no celular da Amanda que a senha nova conecta (o aparelho foi
+  desligado antes do teste final).
+- Limpar os residuos de teste da ONU do Ygson (`gpon_onu-1/2/2:1`): VLAN 600,
+  mgmt-ip, tr069-mgmt, service-port 2, e o Wi-Fi que ficou com nome de teste
+  `RCNet-Teste5G`. So quando ela voltar a ficar online.
