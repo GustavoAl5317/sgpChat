@@ -585,7 +585,10 @@ function rede(banda, o) {
   o = o || {};
   const i = { Enable: par(o.enable === undefined ? true : o.enable) };
   if (o.semSsid !== true) i.SSID = par('RedeAtual', o.ssidWritable);
-  if (banda) i.OperatingFrequencyBand = par(banda);
+  // banda: 'std:11ac' usa o campo Standard (formato Huawei) em vez do
+  // OperatingFrequencyBand, para exercitar a deteccao pelo Standard grudado.
+  if (banda && String(banda).slice(0, 4) === 'std:') i.Standard = par(String(banda).slice(4));
+  else if (banda) i.OperatingFrequencyBand = par(banda);
   if (o.semSenha !== true) i.KeyPassphrase = par('', o.senhaWritable);
   // psk: PreSharedKey.1.PreSharedKey  |  pskKp: PreSharedKey.1.KeyPassphrase
   // (este ultimo e o unico que a Huawei HG8145V5 aceitou em campo).
@@ -1028,6 +1031,23 @@ check(alvHw.some(function (c) { return /WLANConfiguration\.1\.PreSharedKey\.1\.K
 check(/Pronto!/.test(ro.reply), 'Huawei com ACS aplica na hora');
 check(ro.audit && ro.audit.resposta_sgp && ro.audit.resposta_sgp.via === 'genieacs',
       'auditoria do auto-Huawei marca via genieacs, nao olt');
+
+// --- banda pelo Standard grudado da Huawei (11bgn / 11ac) ---
+// Bug pego no n8n real: a Amanda tinha Standard "11bgn" (idx1) e "11ac" (idx5),
+// ambos ligados, mas o "11ac" nao era reconhecido como 5 GHz e as duas redes
+// viravam "2.4" -> so a idx1 era trocada, deixando o 5 GHz na senha velha.
+// Testado no modo genieacs, onde a montagem da tarefa (e a deteccao de banda)
+// acontece direto, sem o roteamento do auto.
+ENV = { WIFI_MODO: 'genieacs' };
+sa = ateConfirmar('2', ['SenhaBandas123']);
+rd = turn(sa, '1', PHONE_OK, null, null, null, null,
+          { busca: { statusCode: 200, body: [device({
+              '1': rede('std:11bgn', { pskKp: true }),
+              '5': rede('std:11ac',  { pskKp: true }) })] },
+            aplicar: APLICOU });
+check(JSON.stringify(rd.montado.acs_redes) === '[1,5]',
+      'Standard 11bgn/11ac -> troca nas DUAS bandas (nao so na 2.4)');
+ENV = { WIFI_MODO: 'auto' };
 
 // --- Huawei atras de CGNAT: o ACS responde 202 (tarefa enfileirada) ---
 // O ACS nao alcanca o aparelho na hora, entao a tarefa fica na fila e aplica no

@@ -1030,14 +1030,23 @@ const indices = Object.keys(wlan).filter(function (k) { return /^\d+$/.test(k); 
 // escrever as cegas.
 if (!indices.length) return falha('sem_wlanconfiguration');
 
-// 2.4 vs 5 GHz: OperatingFrequencyBand e o campo canonico, mas nem todo
-// firmware expoe. Standard com 'a', 'ac' ou 'ax' e o indicio seguinte.
-function banda(inst) {
+// 2.4 vs 5 GHz. Tres indicios, do mais forte ao mais fraco:
+//   1) OperatingFrequencyBand - o campo canonico, mas nem todo firmware expoe.
+//   2) Standard - a Huawei manda "11ac"/"11ax" (5 GHz) e "11bgn"/"11n" (2.4),
+//      tudo grudado, sem virgula. 'b' e 'g' so existem em 2.4; 'ac'/'ax' so em
+//      5. ('n' e dual-band, nao decide sozinho.)
+//   3) Convencao de indice, provada nesta rede: 1-4 = 2.4 GHz, 5-8 = 5 GHz.
+//      E o ultimo recurso quando o Standard nao decide.
+// banda() nunca devolve '' - sempre classifica, para nunca deixar uma rede de
+// 5 GHz de fora por falta de rotulo (seria o "mudou e nao mudou").
+function banda(inst, idx) {
   const f = val(inst.OperatingFrequencyBand);
   if (f) return /5/.test(String(f)) ? '5' : '2.4';
-  const st = String(val(inst.Standard) || '');
-  if (st) return /(^|,)\s*a[cx]?\s*(,|$)/i.test(st) ? '5' : '2.4';
-  return '';
+  const st = String(val(inst.Standard) || '').toLowerCase();
+  if (/a[cx]/.test(st)) return '5';                 // 11ac, 11ax
+  if (/(^|[,\s])a([,\s]|$)/.test(st)) return '5';    // 802.11a isolado
+  if (/[bg]/.test(st)) return '2.4';                // b/g so existem em 2.4
+  return Number(idx) >= 5 ? '5' : '2.4';            // convencao de indice
 }
 
 // So redes LIGADAS entram: rede desligada e quase sempre a de visitantes que
@@ -1050,12 +1059,14 @@ if (!ligadas.length) return falha('sem_rede_ligada');
 // e a rede principal. Quando nao informa, nao da para distinguir a principal
 // da de visitantes, e a escolha conservadora e mudar todas as ligadas: e o
 // mesmo efeito de mandar novo_ssid + novo_ssid_5g pelo cpemanage.
-const temBanda = ligadas.some(function (a) { return banda(a.inst) !== ''; });
+// Com o recurso de indice, banda() sempre classifica; temBanda so continua
+// existindo para o caso (teorico) de nao haver rede ligada nenhuma.
+const temBanda = ligadas.some(function (a) { return banda(a.inst, a.n) !== ''; });
 let alvos;
 if (temBanda) {
   const vistas = {};
   alvos = ligadas.filter(function (a) {
-    const b = banda(a.inst) || 'indefinida';
+    const b = banda(a.inst, a.n) || 'indefinida';
     if (vistas[b]) return false;
     vistas[b] = true;
     return true;
