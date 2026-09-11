@@ -1,0 +1,314 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Painel de Atendimentos</title>
+<style>
+  :root {
+    --bg:#0f1720; --card:#172230; --card2:#1e2c3d; --linha:#2a3a4d;
+    --txt:#e6edf3; --mut:#8aa0b6; --azul:#2f81f7; --verde:#2ea043; --verm:#e5534b;
+    --amar:#d29922;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; font:14px/1.5 system-ui,Segoe UI,Roboto,sans-serif;
+         background:var(--bg); color:var(--txt); }
+  a { color:var(--azul); }
+  .esconde { display:none !important; }
+  /* ----- login ----- */
+  #login { min-height:100vh; display:flex; align-items:center; justify-content:center; }
+  #login .box { background:var(--card); padding:32px; border-radius:12px; width:320px;
+                border:1px solid var(--linha); }
+  #login h1 { font-size:18px; margin:0 0 20px; }
+  input, select, button { font:inherit; }
+  .campo { width:100%; padding:10px 12px; margin:6px 0 14px; border-radius:8px;
+           border:1px solid var(--linha); background:var(--bg); color:var(--txt); }
+  .btn { background:var(--azul); color:#fff; border:0; padding:10px 16px; border-radius:8px;
+         cursor:pointer; font-weight:600; }
+  .btn:hover { filter:brightness(1.1); }
+  .btn.sec { background:var(--card2); color:var(--txt); border:1px solid var(--linha); }
+  .erro { color:var(--verm); min-height:18px; font-size:13px; }
+  /* ----- app ----- */
+  header { display:flex; align-items:center; gap:16px; padding:12px 20px;
+           background:var(--card); border-bottom:1px solid var(--linha); position:sticky; top:0; }
+  header h1 { font-size:16px; margin:0; }
+  header .quem { margin-left:auto; color:var(--mut); font-size:13px; }
+  nav { display:flex; gap:4px; padding:0 12px; background:var(--card);
+        border-bottom:1px solid var(--linha); flex-wrap:wrap; }
+  nav button { background:none; border:0; color:var(--mut); padding:12px 16px; cursor:pointer;
+               border-bottom:2px solid transparent; font-weight:600; }
+  nav button.on { color:var(--txt); border-bottom-color:var(--azul); }
+  main { padding:20px; max-width:1100px; margin:0 auto; }
+  .barra { display:flex; gap:8px; margin-bottom:16px; flex-wrap:wrap; align-items:center; }
+  .barra input, .barra select { padding:8px 10px; border-radius:8px; border:1px solid var(--linha);
+        background:var(--card); color:var(--txt); }
+  table { width:100%; border-collapse:collapse; background:var(--card); border-radius:10px;
+          overflow:hidden; }
+  th, td { text-align:left; padding:10px 12px; border-bottom:1px solid var(--linha); font-size:13px; }
+  th { color:var(--mut); font-weight:600; background:var(--card2); }
+  tr:last-child td { border-bottom:0; }
+  .tag { display:inline-block; padding:2px 8px; border-radius:20px; font-size:12px; font-weight:600; }
+  .tag.ok { background:rgba(46,160,67,.15); color:#5fd97a; }
+  .tag.nao { background:rgba(229,83,75,.15); color:#ff8078; }
+  .tag.tipo { background:var(--card2); color:var(--mut); }
+  .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:12px; margin-bottom:20px; }
+  .card { background:var(--card); border:1px solid var(--linha); border-radius:10px; padding:16px; }
+  .card .num { font-size:28px; font-weight:700; }
+  .card .rot { color:var(--mut); font-size:13px; }
+  .conv { display:grid; grid-template-columns:280px 1fr; gap:12px; }
+  .conv .lista { background:var(--card); border:1px solid var(--linha); border-radius:10px;
+                 max-height:70vh; overflow:auto; }
+  .conv .lista div { padding:10px 12px; border-bottom:1px solid var(--linha); cursor:pointer; }
+  .conv .lista div:hover { background:var(--card2); }
+  .conv .lista .tel { font-weight:600; }
+  .conv .lista .prev { color:var(--mut); font-size:12px; white-space:nowrap; overflow:hidden;
+                       text-overflow:ellipsis; }
+  .bolhas { background:var(--card); border:1px solid var(--linha); border-radius:10px; padding:16px;
+            max-height:70vh; overflow:auto; }
+  .msg { max-width:70%; padding:8px 12px; border-radius:12px; margin:6px 0; white-space:pre-wrap; }
+  .msg.in { background:var(--card2); }
+  .msg.out { background:#193a5e; margin-left:auto; }
+  .msg .h { font-size:11px; color:var(--mut); margin-top:4px; }
+  .vazio { color:var(--mut); padding:24px; text-align:center; }
+  .det { background:var(--card2); font-family:ui-monospace,monospace; font-size:12px;
+         white-space:pre-wrap; padding:10px; border-radius:8px; color:var(--mut); }
+  @media (max-width:700px){ .conv{grid-template-columns:1fr;} }
+</style>
+</head>
+<body>
+
+<!-- ================= LOGIN ================= -->
+<div id="login">
+  <div class="box">
+    <h1>Painel de Atendimentos</h1>
+    <label>Usuário</label>
+    <input id="lg-user" class="campo" autocomplete="username">
+    <label>Senha</label>
+    <input id="lg-pass" class="campo" type="password" autocomplete="current-password">
+    <div class="erro" id="lg-erro"></div>
+    <button class="btn" style="width:100%" onclick="entrar()">Entrar</button>
+  </div>
+</div>
+
+<!-- ================= APP ================= -->
+<div id="app" class="esconde">
+  <header>
+    <h1>Painel de Atendimentos</h1>
+    <span class="quem" id="quem"></span>
+    <button class="btn sec" onclick="sair()">Sair</button>
+  </header>
+  <nav id="abas"></nav>
+  <main id="conteudo"></main>
+</div>
+
+<script>
+const $ = (s) => document.querySelector(s);
+let EU = null;
+
+async function api(url, opts) {
+  const r = await fetch(url, Object.assign({ headers: { 'Content-Type': 'application/json' } }, opts));
+  if (r.status === 401) { mostrarLogin(); throw new Error('nao_autenticado'); }
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.erro || ('http_' + r.status));
+  return j;
+}
+
+function mostrarLogin() { $('#app').classList.add('esconde'); $('#login').classList.remove('esconde'); }
+
+async function entrar() {
+  $('#lg-erro').textContent = '';
+  try {
+    await api('/api/login', { method: 'POST', body: JSON.stringify({
+      usuario: $('#lg-user').value, senha: $('#lg-pass').value }) });
+    await iniciar();
+  } catch (e) {
+    $('#lg-erro').textContent = e.message === 'credenciais_invalidas'
+      ? 'Usuário ou senha incorretos.' : 'Não foi possível entrar.';
+  }
+}
+$('#lg-pass') && $('#lg-pass').addEventListener('keydown', (e) => { if (e.key === 'Enter') entrar(); });
+
+async function sair() { await api('/api/logout', { method: 'POST' }).catch(()=>{}); location.reload(); }
+
+const ABAS = [
+  { id: 'atend', rot: 'Atendimentos', render: abaAtend },
+  { id: 'conv',  rot: 'Conversas',    render: abaConversas },
+  { id: 'cliente', rot: 'Consultar cliente', render: abaCliente },
+  { id: 'resumo', rot: 'Resumo',      render: abaResumo },
+  { id: 'users', rot: 'Usuários',     render: abaUsers, admin: true },
+];
+
+async function iniciar() {
+  EU = await api('/api/eu');
+  $('#login').classList.add('esconde');
+  $('#app').classList.remove('esconde');
+  $('#quem').textContent = EU.usuario + (EU.papel === 'admin' ? ' (admin)' : '');
+  const nav = $('#abas'); nav.innerHTML = '';
+  ABAS.filter(a => !a.admin || EU.papel === 'admin').forEach((a, i) => {
+    const b = document.createElement('button');
+    b.textContent = a.rot; b.onclick = () => trocar(a, b);
+    nav.appendChild(b);
+    if (i === 0) trocar(a, b);
+  });
+}
+function trocar(aba, btn) {
+  document.querySelectorAll('#abas button').forEach(x => x.classList.remove('on'));
+  btn.classList.add('on');
+  $('#conteudo').innerHTML = '<div class="vazio">Carregando…</div>';
+  aba.render();
+}
+
+const TIPOS = { wifi:'Wi-Fi', chamado:'Chamado', segunda_via:'2ª via', diagnostico:'Diagnóstico' };
+function dt(s){ const d=new Date(s); return d.toLocaleString('pt-BR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}); }
+function esc(s){ return String(s==null?'':s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+
+// -------- Atendimentos --------
+async function abaAtend() {
+  $('#conteudo').innerHTML =
+    '<div class="barra">' +
+    '<input id="f-q" placeholder="telefone, CPF ou contrato">' +
+    '<select id="f-tipo"><option value="">Todos os tipos</option>' +
+    Object.entries(TIPOS).map(([k,v])=>`<option value="${k}">${v}</option>`).join('') +
+    '</select><button class="btn" onclick="carregarAtend()">Filtrar</button></div>' +
+    '<div id="tab"></div>';
+  carregarAtend();
+}
+async function carregarAtend() {
+  const q = encodeURIComponent($('#f-q').value.trim());
+  const tipo = $('#f-tipo').value;
+  try {
+    const rows = await api(`/api/atendimentos?q=${q}&tipo=${tipo}`);
+    if (!rows.length) { $('#tab').innerHTML = '<div class="vazio">Nenhum atendimento.</div>'; return; }
+    $('#tab').innerHTML = '<table><thead><tr><th>Quando</th><th>Tipo</th><th>Telefone</th>' +
+      '<th>CPF</th><th>Contrato</th><th>Resultado</th></tr></thead><tbody>' +
+      rows.map(r => `<tr><td>${dt(r.created_at)}</td>` +
+        `<td><span class="tag tipo">${TIPOS[r.tipo]||r.tipo}</span></td>` +
+        `<td>${esc(r.phone)}</td><td>${esc(r.cpf)}</td><td>${esc(r.contrato_id||'')}</td>` +
+        `<td><span class="tag ${r.sucesso?'ok':'nao'}">${r.sucesso?'Sucesso':'Não'}</span></td></tr>`).join('') +
+      '</tbody></table>';
+  } catch(e){ $('#tab').innerHTML = '<div class="vazio">Erro ao carregar.</div>'; }
+}
+
+// -------- Conversas --------
+async function abaConversas() {
+  $('#conteudo').innerHTML = '<div class="conv"><div class="lista" id="c-lista"></div>' +
+    '<div class="bolhas" id="c-msgs"><div class="vazio">Selecione uma conversa.</div></div></div>';
+  try {
+    const rows = await api('/api/conversas');
+    if (!rows.length) { $('#c-lista').innerHTML =
+      '<div class="vazio">Sem conversas ainda.<br><small>O registro começa quando o bot for atualizado.</small></div>'; return; }
+    $('#c-lista').innerHTML = rows.map(r =>
+      `<div onclick="verConversa('${esc(r.phone)}',this)"><div class="tel">${esc(r.phone)}</div>` +
+      `<div class="prev">${esc((r.direcao==='out'?'→ ':'')+(r.texto||''))}</div></div>`).join('');
+  } catch(e){ $('#c-lista').innerHTML = '<div class="vazio">Erro.</div>'; }
+}
+async function verConversa(phone) {
+  $('#c-msgs').innerHTML = '<div class="vazio">Carregando…</div>';
+  try {
+    const msgs = await api('/api/conversas?phone=' + encodeURIComponent(phone));
+    $('#c-msgs').innerHTML = msgs.length ? msgs.map(m =>
+      `<div class="msg ${m.direcao}">${esc(m.texto)}<div class="h">${dt(m.created_at)}</div></div>`).join('')
+      : '<div class="vazio">Sem mensagens.</div>';
+    $('#c-msgs').scrollTop = $('#c-msgs').scrollHeight;
+  } catch(e){ $('#c-msgs').innerHTML = '<div class="vazio">Erro.</div>'; }
+}
+
+// -------- Consultar cliente --------
+async function abaCliente() {
+  $('#conteudo').innerHTML =
+    '<div class="barra"><input id="cl-doc" placeholder="CPF ou CNPJ (só números)">' +
+    '<button class="btn" onclick="buscarCliente()">Buscar</button></div><div id="cl-res"></div>';
+  $('#cl-doc').addEventListener('keydown', e => { if (e.key==='Enter') buscarCliente(); });
+}
+async function buscarCliente() {
+  const doc = $('#cl-doc').value.replace(/\D/g,'');
+  if (!doc) return;
+  $('#cl-res').innerHTML = '<div class="vazio">Buscando…</div>';
+  try {
+    const r = await api('/api/cliente?doc=' + doc);
+    const cs = (r.sgp && r.sgp.contratos) || [];
+    let html = '';
+    if (!cs.length) html += '<div class="vazio">Nenhum contrato no SGP para esse documento.</div>';
+    cs.forEach(c => {
+      html += '<div class="card" style="margin-bottom:12px"><b>' + esc(c.razaoSocial||'') + '</b>' +
+        ` <span class="tag ${c.contratoStatusDisplay==='Ativo'?'ok':'nao'}">${esc(c.contratoStatusDisplay||'')}</span>` +
+        '<br><span class="rot">Contrato ' + esc(c.contratoId) + ' · ' + esc(c.servico_login||'') +
+        ' · ' + esc(c.planointernet||'') + '</span><br><span class="rot">' +
+        esc([c.endereco_logradouro,c.endereco_numero,c.endereco_bairro,c.endereco_cidade].filter(Boolean).join(', ')) +
+        '</span></div>';
+    });
+    if (r.historico && r.historico.length) {
+      html += '<h3 style="color:var(--mut)">Histórico no atendimento automático</h3><table><thead><tr>' +
+        '<th>Quando</th><th>Tipo</th><th>Resultado</th></tr></thead><tbody>' +
+        r.historico.map(h=>`<tr><td>${dt(h.created_at)}</td><td>${TIPOS[h.tipo]||h.tipo}</td>` +
+        `<td><span class="tag ${h.sucesso?'ok':'nao'}">${h.sucesso?'Sucesso':'Não'}</span></td></tr>`).join('') +
+        '</tbody></table>';
+    }
+    $('#cl-res').innerHTML = html;
+  } catch(e){
+    $('#cl-res').innerHTML = '<div class="vazio">' +
+      (e.message==='sgp_indisponivel'?'SGP indisponível no momento.':'Erro na consulta.') + '</div>';
+  }
+}
+
+// -------- Resumo --------
+async function abaResumo() {
+  try {
+    const r = await api('/api/resumo');
+    const porTipo = r.por_tipo.map(t=>`<div class="card"><div class="num">${t.n}</div>` +
+      `<div class="rot">${TIPOS[t.tipo]||t.tipo} · ${t.ok} ok</div></div>`).join('');
+    const maxSem = Math.max(1, ...r.semana.map(d=>d.n));
+    const barras = r.semana.map(d=>`<div style="display:flex;align-items:center;gap:8px;margin:4px 0">` +
+      `<span class="rot" style="width:48px">${d.dia}</span>` +
+      `<div style="height:16px;border-radius:4px;background:var(--azul);width:${Math.round(d.n/maxSem*100)}%;min-width:2px"></div>` +
+      `<span class="rot">${d.n}</span></div>`).join('');
+    $('#conteudo').innerHTML =
+      '<div class="cards"><div class="card"><div class="num">' + r.hoje + '</div><div class="rot">Atendimentos hoje</div></div>' +
+      '<div class="card"><div class="num">' + r.huawei_os + '</div><div class="rot">OS de habilitação (Huawei)</div></div>' +
+      porTipo + '</div>' +
+      '<h3 style="color:var(--mut)">Últimos 7 dias</h3><div class="card">' + (barras||'<div class="vazio">Sem dados.</div>') + '</div>';
+  } catch(e){ $('#conteudo').innerHTML = '<div class="vazio">Erro ao carregar o resumo.</div>'; }
+}
+
+// -------- Usuários (admin) --------
+async function abaUsers() {
+  try {
+    const us = await api('/api/usuarios');
+    $('#conteudo').innerHTML =
+      '<div class="barra"><input id="u-nome" placeholder="novo usuário">' +
+      '<input id="u-senha" type="password" placeholder="senha (mín. 6)">' +
+      '<select id="u-papel"><option value="user">Usuário</option><option value="admin">Admin</option></select>' +
+      '<button class="btn" onclick="criarUser()">Criar</button><span class="erro" id="u-erro"></span></div>' +
+      '<table><thead><tr><th>Usuário</th><th>Papel</th><th>Ativo</th><th>Último acesso</th><th></th></tr></thead><tbody>' +
+      us.map(u=>`<tr><td>${esc(u.usuario)}</td><td>${u.papel}</td>` +
+        `<td><span class="tag ${u.ativo?'ok':'nao'}">${u.ativo?'Sim':'Não'}</span></td>` +
+        `<td>${u.ultimo_login?dt(u.ultimo_login):'—'}</td>` +
+        `<td><button class="btn sec" onclick="toggleUser(${u.id},${!u.ativo})">${u.ativo?'Desativar':'Ativar'}</button> ` +
+        `<button class="btn sec" onclick="resetSenha(${u.id})">Nova senha</button></td></tr>`).join('') +
+      '</tbody></table>';
+  } catch(e){ $('#conteudo').innerHTML = '<div class="vazio">Erro.</div>'; }
+}
+async function criarUser() {
+  $('#u-erro').textContent='';
+  try {
+    await api('/api/usuarios', { method:'POST', body: JSON.stringify({
+      usuario:$('#u-nome').value.trim(), senha:$('#u-senha').value, papel:$('#u-papel').value }) });
+    abaUsers();
+  } catch(e){ $('#u-erro').textContent = e.message==='usuario_ja_existe'?'Usuário já existe.':
+    (e.message==='usuario_ou_senha_curta'?'Preencha usuário e senha (mín. 6).':'Erro.'); }
+}
+async function toggleUser(id, ativo) {
+  await api('/api/usuarios/'+id+'/ativo', { method:'POST', body: JSON.stringify({ ativo }) }).catch(()=>{});
+  abaUsers();
+}
+async function resetSenha(id) {
+  const s = prompt('Nova senha (mín. 6 caracteres):'); if (!s) return;
+  try { await api('/api/usuarios/'+id+'/senha', { method:'POST', body: JSON.stringify({ senha:s }) });
+    alert('Senha alterada.'); } catch(e){ alert('Erro: senha muito curta?'); }
+}
+
+// arranque
+iniciar().catch(() => mostrarLogin());
+</script>
+</body>
+</html>

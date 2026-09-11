@@ -23,6 +23,9 @@ CERTRESOLVER=${TRAEFIK_CERTRESOLVER:-letsencrypt}
 # Dominio do Manager da Evolution: onde a EMPRESA acessa para parear o WhatsApp
 # pelo navegador, sem precisar de acesso ao servidor.
 EVOLUTION_DOMAIN=${EVOLUTION_DOMAIN:-evolution.${DOMAIN}}
+# Dominio do painel de atendimentos: onde a equipe do provedor acessa o
+# historico, a consulta de cliente, as conversas e o resumo.
+PAINEL_DOMAIN=${PAINEL_DOMAIN:-painel.${DOMAIN}}
 
 cat > "$DEST" <<EOF
 # Gerado por publicar-no-traefik.sh - nao editar a mao.
@@ -52,6 +55,18 @@ http:
       tls:
         certResolver: ${CERTRESOLVER}
 
+    botsgp-painel-http:
+      rule: "Host(\`${PAINEL_DOMAIN}\`)"
+      entryPoints: [http]
+      middlewares: [redirect-to-https]
+      service: botsgp-painel
+    botsgp-painel:
+      rule: "Host(\`${PAINEL_DOMAIN}\`)"
+      entryPoints: [https]
+      service: botsgp-painel
+      tls:
+        certResolver: ${CERTRESOLVER}
+
   services:
     botsgp-n8n:
       loadBalancer:
@@ -63,13 +78,18 @@ http:
         passHostHeader: true
         servers:
           - url: "http://botsgp-evolution:8080"
+    botsgp-painel:
+      loadBalancer:
+        passHostHeader: true
+        servers:
+          - url: "http://botsgp-painel:8090"
 EOF
 
 echo "==> Rotas escritas em $DEST"
 
 # O Traefik so alcanca os containers se estiverem na mesma rede que ele.
 NET=${TRAEFIK_NETWORK:-easypanel}
-for C in botsgp-n8n botsgp-evolution; do
+for C in botsgp-n8n botsgp-evolution botsgp-painel; do
   if ! docker inspect "$C" --format '{{json .NetworkSettings.Networks}}' 2>/dev/null | grep -q "\"$NET\""; then
     echo "[!] $C fora da rede '$NET'. Conectando..."
     docker network connect "$NET" "$C" || true
@@ -91,12 +111,16 @@ check() {
 }
 check "$DOMAIN"           || true
 check "$EVOLUTION_DOMAIN" || true
+check "$PAINEL_DOMAIN"    || true
 
 cat <<EOF
 
 ================================================================
  Para VOCE (dev):
    n8n .................. https://${DOMAIN}
+
+ Painel de atendimentos (equipe do provedor):
+   ${PAINEL_DOMAIN} ... https://${PAINEL_DOMAIN}
 
  Para a EMPRESA parear o WhatsApp (nao precisa de acesso ao servidor):
    Evolution Manager .... https://${EVOLUTION_DOMAIN}/manager

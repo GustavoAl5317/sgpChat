@@ -136,6 +136,36 @@ services:
     # Sem "ports:": quem alcanca este servico e o n8n, pela rede interna.
     networks: [botsgp]
 
+  # Painel web da equipe: historico de atendimentos, consulta de cliente,
+  # conversas e resumo. Le o mesmo Postgres (so leitura no que e do bot) e tem
+  # contas proprias (painel_users). Duas redes: a interna (fala com o Postgres)
+  # e a do Traefik (a empresa acessa pelo navegador). As rotas do Traefik sao
+  # escritas por publicar-no-traefik.sh, como no n8n.
+  painel:
+    build: ./painel
+    container_name: botsgp-painel
+    restart: unless-stopped
+    depends_on:
+      postgres: { condition: service_healthy }
+    mem_limit: 256m
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      PAINEL_PORT: 8090
+      # Segredo que assina o cookie de sessao. Gere com: openssl rand -hex 32
+      PAINEL_JWT_SECRET: ${PAINEL_JWT_SECRET:-}
+      # Primeira conta admin: so e criada se ainda nao houver nenhuma conta.
+      PAINEL_ADMIN_USER: ${PAINEL_ADMIN_USER:-admin}
+      PAINEL_ADMIN_PASS: ${PAINEL_ADMIN_PASS:-}
+      # Consulta de cliente le o SGP com as mesmas credenciais do bot.
+      SGP_API_URL: ${SGP_API_URL}
+      SGP_API_TOKEN: ${SGP_API_TOKEN}
+      SGP_APP_NAME: ${SGP_APP_NAME}
+    networks: [botsgp, proxy]
+
   evolution:
     # O projeto migrou de atendai/ para evoapicloud/ (atendai parou no v2.2.3).
     # Versao fixada de proposito: "latest" ja quebrou compatibilidade de env vars

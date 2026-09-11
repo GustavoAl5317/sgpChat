@@ -1,0 +1,17 @@
+{
+  "name": "botsgp-painel",
+  "version": "1.0.0",
+  "description": "Painel de atendimentos do bot: historico, consulta de cliente, conversas e resumo.",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "bcryptjs": "2.4.3",
+    "cookie-parser": "1.4.6",
+    "express": "4.21.2",
+    "jsonwebtoken": "9.0.2",
+    "pg": "8.13.1"
+  }
+}
