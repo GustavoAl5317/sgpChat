@@ -238,6 +238,43 @@ check("qos traffic-policy" not in texto_br,
       "nao inventa politica de QoS onde nao havia")
 
 
+# O 'show running-config' completo desta OLT separa secoes com '$', nao com '!',
+# e algumas ONUs tem 'name'/'description' que a OLT grava na autenticacao. Antes
+# do conserto, isso fazia o gerador pular TODAS as ONUs (246 de 246 em campo).
+CONFIG_DOLAR = """interface gpon_olt-1/1/1
+ onu 5 type F670L sn ZTEGD425C2F9
+$
+interface gpon_onu-1/1/1:5
+ real-speed gpon
+ name joao033
+ description zone_Zone_authd_20250922
+ tcont 1 profile SMARTOLT-1G-UP
+ gemport 1 tcont 1
+$
+pon-onu-mng gpon_onu-1/1/1:5
+ service 1 gemport 1 vlan 200
+ vlan port veip_1 mode tag vlan 200
+$
+interface vport-1/1/1.5:1
+ service-port 1 user-vlan 11 vlan 11
+ qos traffic-policy SMARTOLT-1G-DOWN direction egress
+$
+"""
+
+print("=== Formato real: separador $ e name/description ===")
+od = mig.coletar(CONFIG_DOLAR)
+check(len(od) == 1, "acha a ONU mesmo com separador $ (achou %d)" % len(od))
+odu = od[("1", "1", "1", "5")]
+check(odu.sn == "ZTEGD425C2F9", "le o serial na secao delimitada por $")
+check(mig.conferir(odu), "ONU com name/description NAO e pulada")
+td = "\n".join(mig.bloco(odu))
+check("onu 5 type RCNET-HGU sn ZTEGD425C2F9" in td, "migra a ONU do formato real")
+check("service-port 1 user-vlan 11 vlan 11" in td, "recoloca o service-port")
+check("name joao033" not in td, "NAO redigita o name (a OLT repoe na auth)")
+check("description zone_" not in td, "NAO redigita a description")
+check("$" not in td, "o separador $ nao vaza para os comandos")
+
+
 print("=== Destino por fabricante ===")
 
 huawei = "\n".join(mig.bloco(onus[("1", "2", "2", "3")]))

@@ -50,16 +50,19 @@ def destino(o):
 
 # Linhas que o script sabe recolocar depois do 'no onu'. Qualquer outra faz a ONU
 # ser pulada: recolocar o que nao se entende e como restaurar de memoria.
-CONHECIDAS_ONU = ("real-speed", "tcont ", "gemport ")
+CONHECIDAS_ONU = ("real-speed", "tcont ", "gemport ", "name ", "description ")
 # 'vlan port veip_1 mode tag vlan 200' aparece nas ONUs em bridge, no lugar do
 # 'veip 1' das ONUs roteadas. Sem ela a ONU volta sem marcacao de VLAN no veip.
 CONHECIDAS_MNG = ("service ", "veip ", "vlan port ", "mgmt-ip ", "tr069-mgmt ",
                   "security-mgmt ")
 CONHECIDAS_VPORT = ("service-port ", "qos traffic-policy ")
 
-# 'real-speed' e estado, nao configuracao: a OLT recoloca sozinha e o comando nao
-# existe para digitar.
-NAO_REDIGITAR = ("real-speed",)
+# Linhas que a OLT preenche sozinha e nao devem ser redigitadas:
+#  - 'real-speed' e estado, nao ha comando para ele.
+#  - 'name'/'description' com 'zone_Zone_authd_<data>' sao gravados pela OLT no
+#    momento da autenticacao da ONU. Ao recriar, a ONU se reautentica e a OLT os
+#    repoe sozinha; redigita-los daria erro ou sobrescreveria o valor novo.
+NAO_REDIGITAR = ("real-speed", "name ", "description ")
 
 RE_OLT = re.compile(r"^\s*interface\s+gpon_olt-(\d+)/(\d+)/(\d+)\s*$")
 RE_ONU_IF = re.compile(r"^\s*interface\s+gpon_onu-(\d+)/(\d+)/(\d+):(\d+)\s*$")
@@ -81,11 +84,16 @@ def vlan_uplink(slot, pon):
 
 
 def ler_secoes(texto):
-    """Quebra o running-config em (cabecalho, [linhas])."""
+    """Quebra o running-config em (cabecalho, [linhas]).
+
+    Uma secao termina num '!' sozinho (como no 'show this') OU num '$' sozinho -
+    que e o separador que o 'show running-config' completo usa nesta OLT. Sem
+    reconhecer o '$', ele entra no meio da secao e o gerador acha que e config
+    que nao sabe recolocar, pulando a ONU inteira."""
     secoes = []
     atual = None
     for linha in texto.splitlines():
-        if linha.strip() == "!":
+        if linha.strip() in ("!", "$"):
             atual = None
             continue
         if RE_INICIO.match(linha):
