@@ -1152,9 +1152,23 @@ function falha(motivo, extra) {
   }) }];
 }
 
-// Copia local de acsQuery: este node nao compartilha escopo com o Parse & Route.
-// So e usada no modo auto, para o caminho Huawei.
-function montarAcsQuery(login, mac) {
+// Copia local de acsQuery + a busca por serial da ONU, que este node tem em
+// maos (phy_addr do SGP) e o Parse & Route nao tinha. So usada no modo auto.
+//
+// O serial e a chave MAIS confiavel para Huawei: nao depende de o GenieACS ter
+// lido a arvore WAN (o login PPPoE mora la, e pode nao ter sido lido ainda -
+// medido em campo, uma ONU registrada nao era achada por login). O serial GPON
+// do SGP vem como "HWTC1FC5E5AB": os 4 primeiros caracteres sao o vendor ID em
+// ASCII, que no _SerialNumber do TR-069 aparecem em HEX ("48575443"), seguidos
+// do resto igual. Ex.: HWTC1FC5E5AB -> 485754431FC5E5AB.
+function serialTr069(phy) {
+  const s = String(phy || '').trim().toUpperCase();
+  if (!/^[A-Z]{4}[0-9A-F]{8}$/.test(s)) return null;
+  let hex = '';
+  for (let i = 0; i < 4; i++) hex += ('0' + s.charCodeAt(i).toString(16)).slice(-2);
+  return (hex + s.slice(4)).toUpperCase();
+}
+function montarAcsQuery(login, mac, phy) {
   const ors = [];
   const l = String(login || '').trim();
   if (l) {
@@ -1168,6 +1182,12 @@ function montarAcsQuery(login, mac) {
   if (m.length === 12) {
     ors.push({ '_deviceId._SerialNumber': m });
     ors.push({ '_deviceId._SerialNumber': m.match(/.{2}/g).join(':') });
+  }
+  const sn = serialTr069(phy);
+  if (sn) {
+    ors.push({ '_deviceId._SerialNumber': sn });
+    // Algumas ONUs registram o proprio phy_addr sem converter o prefixo.
+    ors.push({ '_deviceId._SerialNumber': String(phy).trim().toUpperCase() });
   }
   if (!ors.length) return null;
   return JSON.stringify(ors.length === 1 ? ors[0] : { $or: ors });
@@ -1216,7 +1236,7 @@ const serial = String(escolhida.phy_addr || '').toUpperCase();
 if (pOlt.wifi_auto === true) {
   // Huawei: so o TR-069 (ACS) troca o Wi-Fi dela.
   if (serial.slice(0, 4) === 'HWTC') {
-    const acsQ = montarAcsQuery(pOlt.login, pOlt.mac);
+    const acsQ = montarAcsQuery(pOlt.login, pOlt.mac, escolhida.phy_addr);
     // Sem chave de juncao nao da para achar o device na NBI sem risco de pegar
     // o errado. Vira chamado, como qualquer outra falta de dado.
     if (!acsQ) return falha('sem_chave_acs');

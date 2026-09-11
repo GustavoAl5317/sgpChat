@@ -1040,6 +1040,27 @@ check(/TR069_INTERNET/.test(pedidoHw.conteudo || ''),
 check(/SenhaHW456/.test(pedidoHw.conteudo || ''),
       'a OS leva a senha que o cliente escolheu');
 
+// --- Huawei achada pelo SERIAL da ONU, sem depender do login lido no ACS ---
+// Em campo, o GenieACS nao tinha lido o usuario PPPoE da ONU, entao a busca por
+// login falhava e uma Huawei registrada virava OS por engano. A busca tambem
+// casa pelo serial: o phy_addr HWTC1FC5E5AB vira o _SerialNumber 485754431FC5E5AB
+// (prefixo ASCII -> hex). Aqui o device so responde a esse serial.
+function deviceHwPorSerial(id) {
+  const d = deviceHuawei(id);
+  d._deviceId._SerialNumber = '485754431FC5E5AB';
+  return d;
+}
+// A busca do ACS e simulada pelo harness devolvendo o device; o que este teste
+// garante e que "Montar Troca na OLT" gera a acs_query com o serial convertido.
+so = ateConfirmarOlt('3', ['RedeHW', 'SenhaHW789']);
+ro = turn(so, '1', PHONE_OK, null, null, null, null,
+          { busca: { statusCode: 200, body: [deviceHwPorSerial()] }, aplicar: { statusCode: 200, body: {} } },
+          { lista: [onuOlt(2, 2, 3, 'HWTC1FC5E5AB')] });
+check(/485754431FC5E5AB/.test(ro.montado.sgp_payload.acs_query || ''),
+      'a busca do ACS inclui o serial convertido (HWTC->hex)');
+check(ro.montado.wifi_rota === 'acs' && ro.montado.acs_device_id,
+      'Huawei achada pelo serial aplica pelo ACS');
+
 // --- serial desconhecido no modo auto -> chamado ---
 so = ateConfirmarOlt('1', ['NomeX']);
 ro = turn(so, '1', PHONE_OK, null, null, null, null, { busca: SEM_DEVICE },
