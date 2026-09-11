@@ -2023,6 +2023,8 @@ connections = {
         to("OLT - Trocar Wifi"),         # olt: ZTE, sei em que porta escrever
         to("GenieACS - Buscar Device"),  # acs: Huawei no modo auto
         to("Wifi Vira Chamado"),         # chamado: nao achei / sem dado
+        to("Wifi Vira Chamado"),         # fallback: valor inesperado -> chamado,
+                                         # nunca um item sumindo em silencio
     ]},
     "OLT - Trocar Wifi": {"main": [to("Aplicou na OLT?")]},
     "Aplicou na OLT?": {"main": [
