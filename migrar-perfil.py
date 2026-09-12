@@ -245,6 +245,11 @@ def main():
     p.add_argument("--pon", help="so esta PON, no formato slot/pon (ex: 1/2)")
     p.add_argument("--tipo", action="append",
                    help="so estes perfis de origem (pode repetir)")
+    p.add_argument("--fabricante", action="append", type=lambda s: s.upper(),
+                   help="so ONUs cujo serial comeca com este prefixo (ex: ZTEG). "
+                        "So o Wi-Fi via OLT (ZTE) precisa migrar de perfil; Huawei "
+                        "(HWTC) o bot atende pelo ACS e nao depende do onu-type. "
+                        "Pode repetir.")
     p.add_argument("--limite", type=int, help="no maximo N ONUs")
     args = p.parse_args()
 
@@ -267,6 +272,8 @@ def main():
         if args.pon and "%s/%s" % (o.slot, o.pon) != args.pon:
             continue
         if args.tipo and o.tipo not in args.tipo:
+            continue
+        if args.fabricante and (o.sn or "")[:4].upper() not in args.fabricante:
             continue
         if o.tipo in DESTINO.values():
             prontas.append(o)
