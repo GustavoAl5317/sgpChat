@@ -238,31 +238,70 @@ async function telaConversas(){
 function pintarConversas(rows){
   $('#cl-lista').innerHTML = rows.map(r=>
     '<div class="item" data-p="'+esc(r.phone)+'" onclick="abrirConversa(\''+esc(r.phone)+'\',this)">'+
-      '<div class="av">👤</div><div class="meio">'+
-      '<div class="nome">'+esc(fone(r.phone))+'</div>'+
+      '<div class="av">'+(r.humano?'🧑‍💼':'👤')+'</div><div class="meio">'+
+      '<div class="nome">'+esc(fone(r.phone))+
+        (r.humano?' <span class="tag ok" style="font-size:10px">atendente</span>':'')+'</div>'+
       '<div class="prev">'+(r.direcao==='out'?'→ ':'')+esc(r.texto||'')+'</div></div>'+
       '<div class="hora">'+hora(r.created_at)+'</div></div>').join('')
     || '<div class="vazio">Nada encontrado.</div>';
 }
+let CONV_ATUAL=null, CONV_TIMER=null, CONV_HUMANO=false;
 async function abrirConversa(phone,el){
   document.querySelectorAll('#cl-lista .item').forEach(x=>x.classList.remove('on'));
   if(el) el.classList.add('on');
   $('#cl').classList.add('tem-sel');
+  CONV_ATUAL=phone;
   const dlg=$('#dlg'); dlg.classList.remove('sem-sel');
-  dlg.innerHTML='<div class="dlg-topo"><button class="btn sec" style="padding:6px 10px" onclick="voltarLista()">←</button>'+
-    '<div class="av">👤</div><div><b>'+esc(fone(phone))+'</b></div></div>'+
-    '<div class="dlg-corpo" id="dlg-corpo"><div class="vazio">Carregando…</div></div>';
+  dlg.innerHTML=
+    '<div class="dlg-topo"><button class="btn sec" style="padding:6px 10px" onclick="voltarLista()">←</button>'+
+      '<div class="av">👤</div><div style="flex:1"><b>'+esc(fone(phone))+'</b>'+
+      '<div id="dlg-estado" class="prev"></div></div>'+
+      '<button class="btn" id="btn-humano" onclick="alternarHumano()">…</button></div>'+
+    '<div class="dlg-corpo" id="dlg-corpo"><div class="vazio">Carregando…</div></div>'+
+    '<div id="dlg-envio" style="display:none;padding:10px;background:var(--barra);gap:8px">'+
+      '<textarea id="dlg-txt" rows="1" placeholder="Escreva uma mensagem…" '+
+        'style="flex:1;resize:none;padding:10px 12px;border-radius:18px;border:0;background:var(--painel);color:var(--txt)"></textarea>'+
+      '<button class="btn" onclick="enviarMsg()">Enviar</button></div>';
+  $('#dlg-envio').style.display='flex';
+  await recarregarConversa(true);
+  if(CONV_TIMER) clearInterval(CONV_TIMER);
+  CONV_TIMER=setInterval(()=>{ if(CONV_ATUAL===phone) recarregarConversa(false); }, 5000);
+}
+async function recarregarConversa(rolar){
+  const phone=CONV_ATUAL; if(!phone) return;
   try{
+    const est = await api('/api/humano?phone='+encodeURIComponent(phone));
+    CONV_HUMANO = !!est.ativo;
+    const bh=$('#btn-humano'); const es=$('#dlg-estado');
+    if(bh){ bh.textContent = CONV_HUMANO?'Devolver ao bot':'Assumir'; bh.className = CONV_HUMANO?'btn sec':'btn'; }
+    if(es) es.textContent = CONV_HUMANO ? ('em atendimento humano'+(est.atendente?' · '+esc(est.atendente):'')) : 'com o bot';
     const msgs = await api('/api/conversas?phone='+encodeURIComponent(phone));
-    const corpo=$('#dlg-corpo');
+    const corpo=$('#dlg-corpo'); if(!corpo) return;
+    const perto = corpo.scrollHeight - corpo.scrollTop - corpo.clientHeight < 80;
     corpo.innerHTML = msgs.length ? msgs.map(m=>
       '<div class="bolha '+(m.direcao==='out'?'out':'in')+'">'+esc(m.texto)+
       '<div class="h">'+hora(m.created_at)+'</div></div>').join('')
       : '<div class="vazio">Sem mensagens nesta conversa.</div>';
-    corpo.scrollTop=corpo.scrollHeight;
-  }catch(e){ $('#dlg-corpo').innerHTML='<div class="vazio">Erro.</div>'; }
+    if(rolar||perto) corpo.scrollTop=corpo.scrollHeight;
+  }catch(e){ /* silencioso no auto-refresh */ }
 }
-function voltarLista(){ $('#cl').classList.remove('tem-sel'); $('#dlg').classList.add('sem-sel'); }
+async function alternarHumano(){
+  if(!CONV_ATUAL) return;
+  const novo=!CONV_HUMANO;
+  if(!novo && !confirm('Devolver esta conversa ao bot? O atendimento automático volta a responder.')) return;
+  try{ await api('/api/humano',{method:'POST',body:JSON.stringify({phone:CONV_ATUAL,ativo:novo})});
+    recarregarConversa(false); }catch(e){ alert('Não foi possível alterar.'); }
+}
+async function enviarMsg(){
+  const t=$('#dlg-txt'); const texto=(t.value||'').trim(); if(!texto||!CONV_ATUAL) return;
+  t.value=''; t.disabled=true;
+  try{ await api('/api/enviar',{method:'POST',body:JSON.stringify({phone:CONV_ATUAL,texto})});
+    await recarregarConversa(true);
+  }catch(e){ alert(e.message==='evolution_nao_configurada'?'Envio indisponível (Evolution não configurada).':'Não foi possível enviar.'); t.value=texto; }
+  t.disabled=false; t.focus();
+}
+function voltarLista(){ if(CONV_TIMER) clearInterval(CONV_TIMER); CONV_ATUAL=null;
+  $('#cl').classList.remove('tem-sel'); $('#dlg').classList.add('sem-sel'); }
 
 /* ============ ATENDIMENTOS ============ */
 async function telaAtend(){

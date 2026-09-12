@@ -25,3 +25,11 @@ CREATE TABLE IF NOT EXISTS wa_messages (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_wa_messages_phone ON wa_messages (phone, created_at);
+
+-- Atendimento humano: 'ativo' faz o bot calar e a pessoa atender pelo painel.
+CREATE TABLE IF NOT EXISTS wa_humano (
+  phone         TEXT PRIMARY KEY,
+  ativo         BOOLEAN NOT NULL DEFAULT FALSE,
+  atendente     TEXT,
+  atualizado_em TIMESTAMPTZ NOT NULL DEFAULT now()
+);

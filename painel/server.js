@@ -22,6 +22,11 @@ const JWT_SECRET = process.env.PAINEL_JWT_SECRET || '';
 const SGP_URL = (process.env.SGP_API_URL || '').replace(/\/+$/, '');
 const SGP_TOKEN = process.env.SGP_API_TOKEN || '';
 const SGP_APP = process.env.SGP_APP_NAME || '';
+// Para o atendente responder pelo painel, o painel fala com a Evolution (mesma
+// rede interna do bot). Sem essas variaveis, o envio fica indisponivel.
+const EVO_URL = (process.env.EVOLUTION_API_URL || 'http://evolution:8080').replace(/\/+$/, '');
+const EVO_INST = process.env.EVOLUTION_INSTANCE || '';
+const EVO_KEY = process.env.EVOLUTION_API_KEY || '';
 
 if (!JWT_SECRET || JWT_SECRET.length < 16) {
   console.error('[x] PAINEL_JWT_SECRET ausente ou curto. Gere com: openssl rand -hex 32');
@@ -182,10 +187,13 @@ app.get('/api/conversas', autenticar, async (req, res) => {
         'ORDER BY id ASC LIMIT 500', [phone]);
       return res.json(rows);
     }
-    // Lista de conversas: ultimo texto por telefone.
+    // Lista de conversas: ultimo texto por telefone + se esta em atendimento
+    // humano (para o painel marcar e priorizar quem espera uma pessoa).
     const { rows } = await pool.query(
-      "SELECT DISTINCT ON (phone) phone, texto, direcao, created_at " +
-      "FROM wa_messages ORDER BY phone, id DESC");
+      "SELECT DISTINCT ON (m.phone) m.phone, m.texto, m.direcao, m.created_at, " +
+      "  COALESCE(h.ativo, false) AS humano " +
+      "FROM wa_messages m LEFT JOIN wa_humano h ON h.phone = m.phone " +
+      "ORDER BY m.phone, m.id DESC");
     rows.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
     res.json(rows.slice(0, 200));
   } catch (e) {
@@ -217,6 +225,72 @@ async function faturasDoContrato(contrato) {
     }));
   } catch (e) { return null; } // null = nao deu para consultar (SGP fora)
 }
+
+// ---- Atendimento humano: assumir / devolver / enviar ----
+// Estado de uma conversa: em atendimento humano ou com o bot.
+app.get('/api/humano', autenticar, async (req, res) => {
+  const phone = String(req.query.phone || '').replace(/\D/g, '');
+  if (!phone) return res.status(400).json({ erro: 'informe_phone' });
+  const { rows } = await pool.query(
+    'SELECT ativo, atendente FROM wa_humano WHERE phone=$1', [phone]);
+  res.json(rows[0] || { ativo: false, atendente: null });
+});
+
+// Assumir (ativo=true) ou devolver ao bot (ativo=false). Ao devolver, a sessao
+// do bot e apagada, para ele recomecar do menu em vez de cair no "voce esta na
+// fila" que ficou gravado.
+app.post('/api/humano', autenticar, async (req, res) => {
+  const phone = String((req.body && req.body.phone) || '').replace(/\D/g, '');
+  const ativo = !!(req.body && req.body.ativo);
+  if (!phone) return res.status(400).json({ erro: 'informe_phone' });
+  try {
+    await pool.query(
+      'INSERT INTO wa_humano (phone, ativo, atendente, atualizado_em) VALUES ($1,$2,$3,now()) ' +
+      'ON CONFLICT (phone) DO UPDATE SET ativo=$2, atendente=$3, atualizado_em=now()',
+      [phone, ativo, ativo ? req.user.usuario : null]);
+    if (!ativo) await pool.query('DELETE FROM wa_sessions WHERE phone=$1', [phone]);
+    res.json({ ok: true, ativo: ativo });
+  } catch (e) {
+    console.error('humano:', e.message);
+    res.status(500).json({ erro: 'interno' });
+  }
+});
+
+// Enviar mensagem ao cliente pelo WhatsApp (via Evolution). Assumir esta
+// implicito: quem responde pelo painel esta atendendo, entao liga o modo humano
+// para o bot nao responder junto. Grava a saida como 'out' (com o atendente).
+app.post('/api/enviar', autenticar, async (req, res) => {
+  const phone = String((req.body && req.body.phone) || '').replace(/\D/g, '');
+  const texto = String((req.body && req.body.texto) || '').trim();
+  if (!phone || !texto) return res.status(400).json({ erro: 'faltam_campos' });
+  if (texto.length > 4096) return res.status(400).json({ erro: 'texto_longo' });
+  if (!EVO_INST || !EVO_KEY) return res.status(503).json({ erro: 'evolution_nao_configurada' });
+  try {
+    await pool.query(
+      'INSERT INTO wa_humano (phone, ativo, atendente, atualizado_em) VALUES ($1,true,$2,now()) ' +
+      'ON CONFLICT (phone) DO UPDATE SET ativo=true, atendente=$2, atualizado_em=now()',
+      [phone, req.user.usuario]);
+    const r = await fetch(EVO_URL + '/message/sendText/' + encodeURIComponent(EVO_INST), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', apikey: EVO_KEY },
+      body: JSON.stringify({ number: phone, text: texto }),
+      signal: AbortSignal.timeout(20000),
+    });
+    if (!r.ok) {
+      const t = await r.text().catch(() => '');
+      console.error('evolution send:', r.status, t.slice(0, 200));
+      return res.status(502).json({ erro: 'falha_envio' });
+    }
+    // Prefixo com o atendente, para o historico distinguir de quem foi.
+    await pool.query(
+      "INSERT INTO wa_messages (phone, direcao, texto) VALUES ($1,'out',$2)",
+      [phone, '[' + req.user.usuario + '] ' + texto]);
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('enviar:', e.message);
+    res.status(502).json({ erro: 'falha_envio' });
+  }
+});
 
 // ---- Consulta de cliente (SGP + faturas + historico no bot) ----
 app.get('/api/cliente', autenticar, async (req, res) => {

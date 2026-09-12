@@ -169,6 +169,10 @@ services:
       SGP_API_URL: ${SGP_API_URL}
       SGP_API_TOKEN: ${SGP_API_TOKEN}
       SGP_APP_NAME: ${SGP_APP_NAME}
+      # Para o atendente responder pelo painel (envia via Evolution, rede interna).
+      EVOLUTION_API_URL: http://evolution:8080
+      EVOLUTION_INSTANCE: ${EVOLUTION_INSTANCE}
+      EVOLUTION_API_KEY: ${EVOLUTION_API_KEY}
     networks: [botsgp, proxy]
 
   evolution:

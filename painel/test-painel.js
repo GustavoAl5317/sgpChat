@@ -8,6 +8,8 @@
 process.env.PAINEL_JWT_SECRET = 'x'.repeat(40);
 process.env.POSTGRES_DB = 'x'; process.env.POSTGRES_USER = 'x';
 process.env.POSTGRES_PASSWORD = 'x';
+process.env.EVOLUTION_INSTANCE = 'principal';
+process.env.EVOLUTION_API_KEY = 'chave-teste';
 
 const http = require('http');
 const bcrypt = require('bcryptjs');
@@ -42,7 +44,27 @@ pool.query = async (sql, args) => {
   }
   if (/SELECT id, usuario, papel, ativo/.test(sql)) return { rows: users };
   if (/FROM wa_wifi_change_log/.test(sql)) return { rows: [] };
+  // Atendimento humano em memoria.
+  if (/INSERT INTO wa_humano/.test(sql)) {
+    humano[args[0]] = { ativo: args[1] === true || /true/.test(sql) ? true : args[1],
+                        atendente: args[2] };
+    // quando o SQL fixa ativo=true (envio), args pode ter so [phone, atendente]
+    if (/VALUES \(\$1,true/.test(sql)) humano[args[0]] = { ativo: true, atendente: args[1] };
+    return { rows: [] };
+  }
+  if (/SELECT ativo, atendente FROM wa_humano/.test(sql)) {
+    const h = humano[args[0]]; return { rows: h ? [h] : [] };
+  }
+  if (/DELETE FROM wa_sessions/.test(sql)) { sessoesApagadas.push(args[0]); return { rows: [] }; }
+  if (/INSERT INTO wa_messages/.test(sql)) { msgsGravadas.push(args); return { rows: [] }; }
   return { rows: [{ n: 0 }] };
+};
+const humano = {}, sessoesApagadas = [], msgsGravadas = [];
+// fetch de mentira para o envio via Evolution (nao sai para a rede)
+let fetchChamado = null;
+global.fetch = async (url, opts) => {
+  fetchChamado = { url: url, body: opts && opts.body };
+  return { ok: true, status: 200, text: async () => '', json: async () => ({}) };
 };
 
 let ok = 0, fail = 0;
@@ -127,6 +149,30 @@ let server;
   // senha curta e recusada
   r = await req('POST', '/api/usuarios/' + novato.id + '/senha', { cookie: cookieAdmin, body: { senha: '123' } });
   check(r.status === 400, 'senha curta e recusada');
+
+  // ---- atendimento humano ----
+  // assumir liga o modo humano
+  r = await req('POST', '/api/humano', { cookie: cookieAdmin, body: { phone: '5592911112222', ativo: true } });
+  check(r.status === 200 && humano['5592911112222'] && humano['5592911112222'].ativo === true,
+        'assumir liga o atendimento humano');
+  r = await req('GET', '/api/humano?phone=5592911112222', { cookie: cookieAdmin });
+  check(r.status === 200 && r.json.ativo === true, 'status reflete atendimento humano ativo');
+
+  // enviar mensagem: chama a Evolution, grava a saida e mantem humano ligado
+  fetchChamado = null;
+  r = await req('POST', '/api/enviar', { cookie: cookieAdmin, body: { phone: '5592911112222', texto: 'Olá, sou o atendente' } });
+  check(r.status === 200, 'enviar mensagem retorna ok');
+  check(fetchChamado && /message\/sendText\/principal/.test(fetchChamado.url), 'enviar chama a Evolution');
+  check(msgsGravadas.some(a => /atendente/.test(String(a[1]))), 'a mensagem enviada e gravada no historico');
+
+  // devolver ao bot: desliga humano e apaga a sessao
+  r = await req('POST', '/api/humano', { cookie: cookieAdmin, body: { phone: '5592911112222', ativo: false } });
+  check(r.status === 200 && humano['5592911112222'].ativo === false, 'devolver ao bot desliga o humano');
+  check(sessoesApagadas.includes('5592911112222'), 'devolver ao bot apaga a sessao (bot recomeca do menu)');
+
+  // enviar sem texto e recusado
+  r = await req('POST', '/api/enviar', { cookie: cookieAdmin, body: { phone: '5592911112222', texto: '' } });
+  check(r.status === 400, 'enviar sem texto e recusado');
 
   server.close();
   console.log('\n' + ok + ' passaram, ' + fail + ' falharam');

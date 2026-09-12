@@ -1740,12 +1740,16 @@ nodes = [
                     "query": ("WITH expiradas AS (\n"
                               "    DELETE FROM wa_sessions WHERE updated_at < now() - interval '30 minutes'\n"
                               ")\n"
-                              "SELECT step, data FROM wa_sessions\n"
-                              " WHERE phone = $1 AND updated_at >= now() - interval '30 minutes'\n"
-                              "UNION ALL\n"
-                              "SELECT NULL, NULL WHERE NOT EXISTS (\n"
-                              "    SELECT 1 FROM wa_sessions\n"
-                              "     WHERE phone = $1 AND updated_at >= now() - interval '30 minutes')"),
+                              "SELECT s.step, s.data,\n"
+                              "       COALESCE((SELECT ativo FROM wa_humano WHERE phone = $1), false) AS humano\n"
+                              "FROM (\n"
+                              "  SELECT step, data FROM wa_sessions\n"
+                              "   WHERE phone = $1 AND updated_at >= now() - interval '30 minutes'\n"
+                              "  UNION ALL\n"
+                              "  SELECT NULL, NULL WHERE NOT EXISTS (\n"
+                              "      SELECT 1 FROM wa_sessions\n"
+                              "       WHERE phone = $1 AND updated_at >= now() - interval '30 minutes')\n"
+                              ") s"),
                     "options": {"queryReplacement": "={{ [$json.phone] }}"}},
      "id": "pg-get", "name": "Get Session", "type": "n8n-nodes-base.postgres",
      # O UNION ALL garante que o node devolva 1 item mesmo se o cliente for novo,
@@ -1753,7 +1757,33 @@ nodes = [
      "alwaysOutputData": True,
      "typeVersion": 2.4, "position": [400, 0], "credentials": PG_CRED},
 
-    code_node("code-route", "Parse & Route", JS_PARSE_ROUTE, [600, 0]),
+    # Atendimento humano: se 'humano' esta ligado (o cliente pediu atendente ou
+    # o atendente assumiu pelo painel), o BOT NAO responde. So registra a
+    # mensagem do cliente para o painel e para. Quem responde e a pessoa.
+    {"parameters": {
+        "conditions": {"options": {"caseSensitive": True, "leftValue": "", "typeValidation": "loose"},
+                       "conditions": [{"leftValue": "={{ $json.humano }}", "rightValue": True,
+                                       "operator": {"type": "boolean", "operation": "true",
+                                                    "singleValue": True}}],
+                       "combinator": "and"}, "options": {}},
+     "id": "if-humano", "name": "Em atendimento humano?", "type": "n8n-nodes-base.if",
+     "typeVersion": 2.2, "position": [560, 0]},
+
+    # Em modo humano so a mensagem do cliente e gravada (para o painel). Sem
+    # mascara: nao ha prompt de senha aqui, e o cliente esta conversando livre.
+    {"parameters": {"operation": "executeQuery",
+                    "query": ("INSERT INTO wa_messages (phone, direcao, texto)\n"
+                              "SELECT $1, 'in', $2 WHERE NULLIF($2, '') IS NOT NULL\n"
+                              "RETURNING 1;"),
+                    "options": {"queryReplacement":
+                        "={{ [$('Extract Inbound').first().json.phone, "
+                        "$('Extract Inbound').first().json.text] }}"}},
+     "id": "pg-msg-humano", "name": "Registrar Entrada Humano",
+     "type": "n8n-nodes-base.postgres", "onError": "continueRegularOutput",
+     "alwaysOutputData": True, "typeVersion": 2.4, "position": [760, 160],
+     "credentials": PG_CRED},
+
+    code_node("code-route", "Parse & Route", JS_PARSE_ROUTE, [760, 0]),
 
     # Switch principal: o que a mensagem do cliente disparou
     {"parameters": {"rules": {"values": [
@@ -2073,6 +2103,22 @@ nodes = [
      "onError": "continueRegularOutput", "alwaysOutputData": True,
      "typeVersion": 2.4, "position": [2650, 160], "credentials": PG_CRED},
 
+    # Quando o bot transfere para atendente (step vira human_handoff), liga o
+    # modo humano - a partir da proxima mensagem o bot cala e a pessoa assume.
+    # A query so age quando e handoff (SELECT ... WHERE); nos outros turnos e
+    # no-op. onError continua: se falhar, a resposta ja saiu.
+    {"parameters": {"operation": "executeQuery",
+                    "query": ("INSERT INTO wa_humano (phone, ativo, atualizado_em)\n"
+                              "SELECT $1, true, now() WHERE $2 = 'human_handoff'\n"
+                              "ON CONFLICT (phone) DO UPDATE\n"
+                              "  SET ativo = true, atualizado_em = now();"),
+                    "options": {"queryReplacement":
+                        "={{ [$('Preparar Persistencia').first().json.phone, "
+                        "$('Preparar Persistencia').first().json.step] }}"}},
+     "id": "pg-marcar-humano", "name": "Marcar Humano", "type": "n8n-nodes-base.postgres",
+     "onError": "continueRegularOutput", "alwaysOutputData": True,
+     "typeVersion": 2.4, "position": [2650, 280], "credentials": PG_CRED},
+
     {"parameters": {
         "method": "POST",
         "url": "={{ $env.EVOLUTION_API_URL }}/message/sendText/{{ $env.EVOLUTION_INSTANCE }}",
@@ -2094,7 +2140,11 @@ PERSIST = "Preparar Persistencia"
 connections = {
     "Webhook Evolution API": {"main": [to("Extract Inbound")]},
     "Extract Inbound": {"main": [to("Get Session")]},
-    "Get Session": {"main": [to("Parse & Route")]},
+    "Get Session": {"main": [to("Em atendimento humano?")]},
+    "Em atendimento humano?": {"main": [
+        to("Registrar Entrada Humano"),  # true: bot cala, so registra a mensagem
+        to("Parse & Route"),             # false: fluxo normal do bot
+    ]},
     "Parse & Route": {"main": [to("Precisa chamar o SGP?")]},
     "Precisa chamar o SGP?": {"main": [
         to("SGP - Consultar Cliente"),   # lookup_cpf
@@ -2158,7 +2208,7 @@ connections = {
     # Duas saidas do mesmo ponto: a resposta ao cliente (via "Tem auditoria?") e
     # o registro da conversa, em paralelo. O registro nao esta no caminho da
     # resposta - se ele falhar, o cliente responde do mesmo jeito.
-    "Upsert Session": {"main": [to("Tem auditoria?") + to("Registrar Mensagens")]},
+    "Upsert Session": {"main": [to("Tem auditoria?") + to("Registrar Mensagens") + to("Marcar Humano")]},
     "Tem auditoria?": {"main": [to("Gravar Auditoria"), to("Evolution - Enviar Resposta")]},
     "Gravar Auditoria": {"main": [to("Evolution - Enviar Resposta")]},
 }
