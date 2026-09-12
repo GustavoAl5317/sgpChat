@@ -2205,10 +2205,13 @@ connections = {
     "SGP - Abrir Chamado": {"main": [to("Processar Chamado")]},
     "Processar Chamado": {"main": [to(PERSIST)]},
     PERSIST: {"main": [to("Upsert Session")]},
-    # Duas saidas do mesmo ponto: a resposta ao cliente (via "Tem auditoria?") e
-    # o registro da conversa, em paralelo. O registro nao esta no caminho da
-    # resposta - se ele falhar, o cliente responde do mesmo jeito.
-    "Upsert Session": {"main": [to("Tem auditoria?") + to("Registrar Mensagens") + to("Marcar Humano")]},
+    # O registro roda EM SERIE, antes do envio, e cada no continua em erro
+    # (onError). Assim ele sempre acontece - independente de o envio dar certo -
+    # e, mesmo se falhar, a resposta ao cliente segue. Em paralelo nao servia: o
+    # envio a um numero invalido aborta a execucao antes dos ramos paralelos.
+    "Upsert Session": {"main": [to("Registrar Mensagens")]},
+    "Registrar Mensagens": {"main": [to("Marcar Humano")]},
+    "Marcar Humano": {"main": [to("Tem auditoria?")]},
     "Tem auditoria?": {"main": [to("Gravar Auditoria"), to("Evolution - Enviar Resposta")]},
     "Gravar Auditoria": {"main": [to("Evolution - Enviar Resposta")]},
 }

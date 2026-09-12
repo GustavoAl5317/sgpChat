@@ -1717,17 +1717,29 @@
       "main": [
         [
           {
-            "node": "Tem auditoria?",
-            "type": "main",
-            "index": 0
-          },
-          {
             "node": "Registrar Mensagens",
             "type": "main",
             "index": 0
-          },
+          }
+        ]
+      ]
+    },
+    "Registrar Mensagens": {
+      "main": [
+        [
           {
             "node": "Marcar Humano",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Marcar Humano": {
+      "main": [
+        [
+          {
+            "node": "Tem auditoria?",
             "type": "main",
             "index": 0
           }
