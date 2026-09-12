@@ -441,30 +441,64 @@ const OLTS = {
   falha:     { result: 'End Of File (EOF). Exception style platform.\ncommand: /usr/bin/ssh\nssh: Could not resolve hostname one' },
 };
 
+// A resposta ao cliente NAO pode ter jargao: nada de dBm, CTO ou modelo do
+// aparelho. Esses dados seguem so na auditoria, para o suporte. Foi o pedido do
+// provedor: "a mensagem esta muito tecnica, tem que ser para o cliente".
 for (const vendor of Object.keys(OLTS)) {
   const d = { lista: ONU_LISTA, detalhe: ONU_DETALHE, info: OLTS[vendor] };
   const td = ateIdentidade('4', PHONE_OK, d).t;
-  const temSinal = /Sinal óptico/.test(td.reply || '');
+  check(!/dBm|CTO|Sinal óptico/i.test(td.reply || ''),
+        'OLT ' + vendor + ': resposta ao cliente sem jargao tecnico');
   if (vendor === 'falha') {
-    check(!temSinal && /Não consegui medir o sinal/.test(td.reply),
-          'OLT fora do ar -> nao inventa sinal, avisa que nao mediu');
-    check(/CTO-CENTRO-07/.test(td.reply), '  ...mas ainda entrega CTO e equipamento');
+    check(/não consegui confirmar o sinal/i.test(td.reply),
+          'OLT fora do ar -> nao inventa sinal, fala simples');
   } else if (vendor === 'ruim') {
-    check(/Ruim/.test(td.reply) && /visita técnica/.test(td.reply),
-          'sinal -29.55 dBm -> Ruim + sugere chamado');
+    check(/problema na sua conexão/i.test(td.reply) && /visita técnica/i.test(td.reply),
+          'sinal fraco -> avisa problema + sugere visita, sem numero');
+  } else if (vendor === 'fiberhome') {
+    check(/um pouco fraco/i.test(td.reply), 'sinal no limite -> "atencao" em portugues simples');
   } else {
-    check(temSinal, 'OLT ' + vendor + ': sinal extraido');
+    check(/tudo certo/i.test(td.reply), 'OLT ' + vendor + ': sinal bom -> mensagem tranquilizadora');
   }
 }
 
 const tdiag = ateIdentidade('4', PHONE_OK,
   { lista: ONU_LISTA, detalhe: ONU_DETALHE, info: OLTS.huawei }).t;
 console.log('  bot:', JSON.stringify(tdiag.reply).slice(0, 190));
-check(/-19\.45 dBm/.test(tdiag.reply), 'valor do sinal correto na resposta');
-check(/Bom/.test(tdiag.reply), '-19.45 dBm classificado como Bom');
-check(/CTO-CENTRO-07/.test(tdiag.reply) && /porta 3/.test(tdiag.reply), 'mostra CTO e porta');
+check(/tudo certo/i.test(tdiag.reply), 'sinal bom -> mensagem tranquilizadora ao cliente');
+check(!/-19\.45/.test(tdiag.reply) && !/dBm/i.test(tdiag.reply), 'o valor tecnico nao vai para o cliente');
 check(tdiag.audit && tdiag.audit.tipo === 'diagnostico', 'auditoria tipo=diagnostico');
+check(Math.abs(tdiag.audit.resposta_sgp.sinal_dbm + 19.45) < 0.01, 'auditoria guarda o sinal (dBm) para o suporte');
+check(tdiag.audit.resposta_sgp.cto === 'CTO-CENTRO-07', 'auditoria guarda a CTO para o suporte');
 check(tdiag.step === 'menu' && Object.keys(tdiag.data).length === 0, 'sessao limpa apos diagnostico');
+
+// ---- Regressao: diagnostico "fixo" (sempre o mesmo aparelho) ----
+// O provedor relatou que a opcao 4 nao diferenciava o equipamento. Causa: quando
+// o SGP ignora o filtro ?contrato= e devolve varias ONUs, o desempate caia em
+// onus[0] - o MESMO primeiro aparelho da base para todo cliente. Agora afunila
+// pelo service_contrato do proprio item.
+const meuContrato = ativos[0].contratoId;
+const _ag = new Date(Date.now() - 3600000).toISOString().slice(0, 19).replace('T', ' ');
+const baseInteira = [
+  { id: 111, olt_name: 'OLT', slot: 1, pon: 1, onuid: 1, type: 'F670L',
+    phy_addr: 'ZTEGAAAA0001', info_rx: '-20.0', info_date: _ag, service_contrato: 777777 },
+  { id: 222, olt_name: 'OLT', slot: 1, pon: 1, onuid: 2, type: 'HG8145',
+    phy_addr: 'HWTCBBBB0002', info_rx: '-21.0', info_date: _ag, service_contrato: meuContrato },
+  { id: 333, olt_name: 'OLT', slot: 1, pon: 1, onuid: 3, type: 'F601',
+    phy_addr: 'ZTEGCCCC0003', info_rx: '-22.0', info_date: _ag, service_contrato: 888888 },
+];
+const tfixo = ateIdentidade('4', PHONE_OK,
+  { lista: baseInteira, detalhe: { onu: {} }, info: null }).t;
+check(tfixo.audit.resposta_sgp.onu_id === 222,
+      'base inteira -> escolhe a ONU do contrato do cliente (nao o onus[0])');
+
+// Base inteira, nenhuma ONU do contrato do cliente e sem MAC para desempatar:
+// e melhor dizer "nao localizei" do que mostrar o aparelho de outro cliente.
+const tnenhum = ateIdentidade('4', PHONE_OK,
+  { lista: baseInteira.filter(function (o) { return o.service_contrato !== meuContrato; }),
+    detalhe: { onu: {} }, info: null }).t;
+check(/Não localizei o equipamento/.test(tnenhum.reply || ''),
+      'sem o contrato do cliente na lista -> nao localizei (nunca mostra o de outro)');
 
 // Sem ONU vinculada (exatamente o caso da base demo)
 const tsem = ateIdentidade('4', PHONE_OK,
@@ -500,36 +534,38 @@ const SEM_DETALHE = { onu: {} };
 const treal = ateIdentidade('4', PHONE_OK,
   { lista: onuReal('-15.656', AGORA), detalhe: SEM_DETALHE, info: null }).t;
 console.log('  bot:', JSON.stringify(treal.reply).slice(0, 170));
-check(/-15\.66 dBm/.test(treal.reply), 'info_rx da lista vira o sinal exibido');
-check(/Bom/.test(treal.reply), '-15.66 dBm classificado como Bom');
-check(/F670L/.test(treal.reply), 'modelo da ONU vem da lista quando nao ha detalhe');
+check(/tudo certo/i.test(treal.reply), 'info_rx bom -> mensagem tranquilizadora ao cliente');
+check(!/F670L/.test(treal.reply) && !/dBm/i.test(treal.reply), 'modelo e dBm ficam fora da resposta ao cliente');
+check(Math.abs(treal.audit.resposta_sgp.sinal_dbm + 15.656) < 0.001, 'auditoria guarda o sinal da lista');
 check(treal.audit.resposta_sgp.sinal_origem === 'lista', 'auditoria registra a origem do sinal');
 
 // info_rx tem prioridade sobre o texto da OLT: se os dois existirem e
-// divergirem, o valor guardado pelo SGP e o confiavel.
+// divergirem, o valor guardado pelo SGP e o confiavel (visto na auditoria).
 const tprio = ateIdentidade('4', PHONE_OK,
   { lista: onuReal('-15.656', AGORA), detalhe: ONU_DETALHE, info: OLTS.huawei }).t;
-check(/-15\.66 dBm/.test(tprio.reply) && !/-19\.45/.test(tprio.reply),
+check(Math.abs(tprio.audit.resposta_sgp.sinal_dbm + 15.656) < 0.001 &&
+      tprio.audit.resposta_sgp.sinal_origem === 'lista',
       'info_rx tem prioridade sobre o parser de texto da OLT');
 
 // Leitura antiga nao pode ser apresentada como se fosse de agora
 const tvelho = ateIdentidade('4', PHONE_OK,
   { lista: onuReal('-15.656', '2026-01-02 03:04:05'), detalhe: SEM_DETALHE, info: null }).t;
-check(/última leitura registrada/.test(tvelho.reply), 'leitura antiga vem com ressalva');
-check(/02\/01 às 03:04/.test(tvelho.reply), 'mostra quando a leitura foi feita');
+check(/última verificação/i.test(tvelho.reply), 'leitura antiga nao e apresentada como de agora');
+check(!/dBm/i.test(tvelho.reply) && !/02\/01/.test(tvelho.reply), 'sem data tecnica nem numero na resposta');
 
 // info_rx fora da faixa fisica (campo vazio, zero, lixo) nao pode virar sinal
 [['', 'vazio'], ['0', 'zero'], ['99', 'positivo absurdo'], ['-99', 'negativo absurdo']].forEach(
   function (par) {
     const t = ateIdentidade('4', PHONE_OK,
       { lista: onuReal(par[0], AGORA), detalhe: SEM_DETALHE, info: null }).t;
-    check(!/Sinal óptico/.test(t.reply), 'info_rx ' + par[1] + ' nao vira leitura de sinal');
+    check(t.audit.resposta_sgp.sinal_dbm === null && /não consegui confirmar o sinal/i.test(t.reply),
+          'info_rx ' + par[1] + ' nao vira leitura de sinal');
   });
 
 // Tx e positivo: nunca pode ser confundido com o sinal recebido
 const ttx = ateIdentidade('4', PHONE_OK,
   { lista: onuReal('2.326', AGORA), detalhe: SEM_DETALHE, info: null }).t;
-check(!/Sinal óptico/.test(ttx.reply), 'valor de Tx nao e exibido como sinal recebido');
+check(ttx.audit.resposta_sgp.sinal_dbm === null, 'valor de Tx nao e usado como sinal recebido');
 
 // ============ Wi-Fi desligado (provedor sem Gerenciador de CPE) ============
 // Sem ACS cadastrado no SGP a opcao 1 falha SEMPRE, no ultimo passo, depois de

@@ -1497,16 +1497,39 @@ if (itens.length === 1 && Array.isArray(itens[0])) {
   });
 }
 const mac = String((prev.sgp_payload && prev.sgp_payload.mac) || '').replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+const alvoContrato = String((prev.sgp_payload && prev.sgp_payload.contrato) || '');
+
+// O filtro por ?contrato= nem sempre e respeitado nesta base: as vezes o
+// endpoint devolve a base inteira. Quando isso acontece e o desempate cai em
+// onus[0], TODO cliente recebe o MESMO equipamento - foi exatamente o que o
+// provedor relatou ("o diagnostico e sempre fixo, nao diferencia o aparelho").
+// Por isso, vindo mais de uma ONU, reduzimos pelo contrato do proprio item
+// antes de qualquer outra coisa. O item da lista carrega o vinculo em
+// service_contrato (visto em producao).
+function contratoDoItem(o) {
+  const c = o.service_contrato != null ? o.service_contrato
+          : (o.contrato != null ? o.contrato
+          : (o.contrato_id != null ? o.contrato_id : null));
+  return c == null ? '' : String(c);
+}
+let candidatas = onus;
+if (onus.length > 1 && alvoContrato) {
+  const doContrato = onus.filter(function (o) { return contratoDoItem(o) === alvoContrato; });
+  if (doContrato.length) candidatas = doContrato;
+}
+
+function casaMac(o) {
+  return mac && String(o.phy_addr || '').replace(/[^a-zA-Z0-9]/g, '').toLowerCase() === mac;
+}
 
 let escolhida = null;
-if (onus.length === 1) {
-  escolhida = onus[0];
-} else if (onus.length > 1 && mac) {
-  escolhida = onus.find(function (o) {
-    return String(o.phy_addr || '').replace(/[^a-zA-Z0-9]/g, '').toLowerCase() === mac;
-  }) || onus[0];
-} else if (onus.length > 1) {
-  escolhida = onus[0];
+if (candidatas.length === 1) {
+  escolhida = candidatas[0];
+} else if (candidatas.length > 1) {
+  // Ainda ambiguo (o contrato nao afunilou para um so): so o MAC do contrato
+  // pode desempatar. Sem casar o MAC, preferimos dizer "nao localizei" a
+  // mostrar o aparelho de outro cliente - NUNCA cair em onus[0].
+  escolhida = candidatas.filter(casaMac)[0] || null;
 }
 
 return [{ json: Object.assign({}, prev, {
@@ -1563,11 +1586,13 @@ function extrairSinal(txt) {
   return unicos.length === 1 ? unicos[0] : null;
 }
 
+// Classificacao interna. O rotulo tecnico (dBm) NAO vai para o cliente: vira
+// uma frase simples em portugues na resposta. So a auditoria guarda o numero.
 function classificar(dbm) {
   if (dbm === null) return null;
-  if (dbm >= -25) return { rotulo: 'Bom', nota: 'Seu sinal está dentro do esperado.' };
-  if (dbm >= -27) return { rotulo: 'Atenção', nota: 'Sinal no limite. Pode oscilar em dias de chuva.' };
-  return { rotulo: 'Ruim', nota: 'Sinal abaixo do recomendado - precisa de visita técnica.' };
+  if (dbm >= -25) return { nivel: 'bom' };
+  if (dbm >= -27) return { nivel: 'atencao' };
+  return { nivel: 'ruim' };
 }
 
 // Ordem de preferencia para o sinal:
@@ -1596,33 +1621,40 @@ if (md) {
   horasAtras = (Date.now() - t) / 3600000;
 }
 
-const linhas = [];
-if (base.type || onu.modelo) linhas.push('*Equipamento:* ' + (onu.modelo || base.type));
-if (onu.cto) linhas.push('*Caixa (CTO):* ' + onu.cto + (onu.porta_cto ? ' / porta ' + onu.porta_cto : ''));
-if (dbm !== null) {
-  let l = '*Sinal óptico:* ' + dbm.toFixed(2) + ' dBm  (' + cls.rotulo + ')';
-  if (md) l += '\n_medido em ' + md[3] + '/' + md[2] + ' às ' + md[4] + ':' + md[5] + '_';
-  linhas.push(l);
-}
+// O cliente recebe uma leitura simples da conexao, sem jargao (nada de dBm,
+// CTO ou modelo do aparelho) - foi o pedido do provedor: "a mensagem esta
+// muito tecnica, tem que ser para o cliente". Os dados tecnicos seguem so na
+// auditoria, para o suporte investigar.
+const REBOOT = 'desligue o roteador da tomada, espere 30 segundos e ligue de novo';
+const temEquip = !!(base.type || onu.modelo || dbm !== null);
 
 let reply_text;
-if (!linhas.length) {
-  reply_text = 'Não consegui ler os dados do seu equipamento agora. ' +
-    'Digite *3* para abrir um chamado ou *5* para falar com um atendente.';
+if (!cls) {
+  // ONU localizada, mas nao deu para confirmar o sinal (OLT fora do ar etc.)
+  reply_text = 'Fiz um teste na sua conexão, mas não consegui confirmar o sinal ' +
+    'da sua internet agora.\n\n' +
+    'Tente o seguinte: ' + REBOOT + '. Se não resolver, digite *3* para abrir ' +
+    'um chamado ou *5* para falar com um atendente.';
+} else if (cls.nivel === 'bom') {
+  if (horasAtras !== null && horasAtras > 48) {
+    reply_text = '✅ Testei a sua conexão e, na última verificação, o sinal estava ' +
+      'normal.\n\nSe você está com problema agora, ' + REBOOT + '. Se continuar, ' +
+      'digite *3* para abrir um chamado.';
+  } else {
+    reply_text = '✅ Boa notícia! Testei a sua conexão de fibra e está tudo certo ' +
+      'por aqui.\n\nSe mesmo assim a internet estiver lenta ou caindo, ' + REBOOT +
+      '. Se não resolver, digite *3* para abrir um chamado.';
+  }
+} else if (cls.nivel === 'atencao') {
+  reply_text = '⚠️ Sua internet está funcionando, mas o sinal está um pouco fraco ' +
+    'e pode oscilar em dias de chuva.\n\nSe estiver enfrentando quedas, digite ' +
+    '*3* para abrir um chamado e agendarmos uma visita técnica.';
 } else {
-  reply_text = 'Diagnóstico da sua conexão:\n\n' + linhas.join('\n');
-  if (cls) reply_text += '\n\n' + cls.nota;
-  if (dbm === null) {
-    reply_text += '\n\nNão consegui medir o sinal óptico neste momento.';
-  } else if (horasAtras !== null && horasAtras > 48) {
-    reply_text += '\n\n_Obs.: essa é a última leitura registrada, não uma medição ' +
-      'de agora. Se o problema começou depois disso, digite *3* para abrir um chamado._';
-  }
-  if (cls && cls.rotulo === 'Ruim') {
-    reply_text += '\n\nDigite *3* para abrir um chamado técnico.';
-  }
-  reply_text += '\n\nDigite *menu* para voltar ao início.';
+  reply_text = '🔴 Encontrei um problema na sua conexão: o sinal da sua internet ' +
+    'está fraco e o ideal é uma visita técnica.\n\nDigite *3* para abrir um ' +
+    'chamado que a gente resolve para você.';
 }
+reply_text += '\n\nDigite *menu* para voltar ao início.';
 
 const session_patch = Object.assign({}, prev.session_patch, { reset: true });
 
@@ -1636,7 +1668,7 @@ return [{ json: Object.assign({}, prev, {
     cpf: prev.session.cpf,
     contrato: prev.sgp_payload.contrato,
     ssid_novo: null,
-    sucesso: linhas.length > 0,
+    sucesso: temEquip,
     resposta_sgp: { onu_id: prev.onu_id, cto: onu.cto || null, sinal_dbm: dbm,
                     sinal_origem: origem, medido_em: medidoEm || null },
   },
