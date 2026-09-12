@@ -974,6 +974,12 @@ const devices = Array.isArray(resp && resp.body) ? resp.body : [];
 const ssid  = (prev.sgp_payload && prev.sgp_payload.ssid)  || null;
 const senha = (prev.sgp_payload && prev.sgp_payload.senha) || null;
 
+// Toda rede que o bot tocar sai em WPA2-AES puro. O padrao de fabrica de muita
+// ONU e WPA/WPA2 misto com TKIP, que o iPhone marca como "Seguranca Fraca" - e
+// TKIP e mesmo fraco. Forcar aqui evita deixar o cliente pior do que estava.
+// WIFI_FORCA_WPA2=false desliga, para o caso de algum modelo nao aceitar.
+const FORCA_WPA2 = String($env.WIFI_FORCA_WPA2 || 'true').trim().toLowerCase() !== 'false';
+
 function falha(motivo, extra) {
   return [{ json: Object.assign({}, prev, {
     acs_device_id: null, acs_task: null,
@@ -1115,6 +1121,17 @@ for (let i = 0; i < alvos.length; i++) {
     } else {
       return falha('senha_nao_escrivel', a.n);
     }
+  }
+  // WPA2-AES puro: 11i (nao "WPAand11i" misto) e AES (nao TKIP). So os campos
+  // que o modelo deixa escrever, para nao derrubar a tarefa inteira num firmware
+  // que nomeie diferente - mesma disciplina da senha.
+  if (FORCA_WPA2) {
+    if (escrivel(a.inst.BeaconType))
+      parametros.push([c + '.BeaconType', '11i', 'xsd:string']);
+    if (escrivel(a.inst.IEEE11iEncryptionModes))
+      parametros.push([c + '.IEEE11iEncryptionModes', 'AESEncryption', 'xsd:string']);
+    if (escrivel(a.inst.IEEE11iAuthenticationMode))
+      parametros.push([c + '.IEEE11iAuthenticationMode', 'PSKAuthentication', 'xsd:string']);
   }
 }
 if (!parametros.length) return falha('nada_a_escrever');

@@ -80,6 +80,9 @@ services:
       # o comando de SSID da OLT nao aceita espaco, e nome de Wi-Fi com espaco e
       # o que a maioria digita.
       WIFI_PERMITE_NOME: ${WIFI_PERMITE_NOME:-true}
+      # Toda troca de Wi-Fi sai em WPA2-AES puro (tira o "Seguranca Fraca" do
+      # iPhone, que aparece em WPA/TKIP). false desliga.
+      WIFI_FORCA_WPA2: ${WIFI_FORCA_WPA2:-true}
       # So usado por WIFI_MODO=genieacs. Aponta para a NBI CRUA (7557), sem
       # TLS e sem token, porque essa conversa acontece dentro da rede acs_nbi
       # e nunca chega a um cabo. O nginx da pasta genieacs/ continua existindo

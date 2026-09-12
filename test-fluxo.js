@@ -622,6 +622,12 @@ function rede(banda, o) {
     if (o.pskKp) inst.KeyPassphrase = par('');
     i.PreSharedKey = { '1': inst };
   }
+  // seg:true expoe os campos de seguranca gravaveis, para testar o WPA2-AES.
+  if (o.seg) {
+    i.BeaconType = par('WPAand11i');
+    i.IEEE11iEncryptionModes = par('TKIPandAESEncryption');
+    i.IEEE11iAuthenticationMode = par('PSKAuthentication');
+  }
   return i;
 }
 function device(redes, id) {
@@ -776,6 +782,29 @@ const dupla = rd.montado.acs_task.parameterValues.map(function (x) { return x[0]
 check(dupla.some(function (c) { return /PreSharedKey\.1\.KeyPassphrase$/.test(c); }) &&
       dupla.some(function (c) { return /PreSharedKey\.1\.PreSharedKey$/.test(c); }),
       'os dois campos do PreSharedKey vao juntos');
+
+// WPA2-AES: toda troca forca 11i + AES, para o cliente nunca ficar em
+// "Seguranca Fraca" (WPA/TKIP). Medido em campo numa Huawei que vinha
+// "WPAand11i"/"TKIPandAESEncryption".
+sa = ateConfirmar('2', ['SenhaSeg123']);
+rd = turn(sa, '1', PHONE_OK, null, null, null, null,
+          { busca: { statusCode: 200, body: [device({ '1': rede('2.4GHz', { pskKp: true, seg: true }) })] },
+            aplicar: APLICOU });
+let seg = rd.montado.acs_task.parameterValues;
+function temPar(arr, sufixo, valor){ return arr.some(function(x){ return x[0].endsWith(sufixo) && x[1]===valor; }); }
+check(temPar(seg, '.BeaconType', '11i'), 'forca BeaconType 11i (WPA2, nao misto)');
+check(temPar(seg, '.IEEE11iEncryptionModes', 'AESEncryption'), 'forca AES (nao TKIP)');
+check(temPar(seg, '.IEEE11iAuthenticationMode', 'PSKAuthentication'), 'forca PSK');
+
+// Desligavel: WIFI_FORCA_WPA2=false nao mexe na seguranca.
+ENV = { WIFI_MODO: 'genieacs', WIFI_FORCA_WPA2: 'false' };
+sa = ateConfirmar('2', ['SenhaSeg123']);
+rd = turn(sa, '1', PHONE_OK, null, null, null, null,
+          { busca: { statusCode: 200, body: [device({ '1': rede('2.4GHz', { pskKp: true, seg: true }) })] },
+            aplicar: APLICOU });
+check(!rd.montado.acs_task.parameterValues.some(function(x){ return /BeaconType|IEEE11i/.test(x[0]); }),
+      'WIFI_FORCA_WPA2=false nao toca na seguranca');
+ENV = { WIFI_MODO: 'genieacs' };
 
 // Firmware antigo que so tem o KeyPassphrase do topo (sem PreSharedKey): ai sim
 // ele e o unico caminho, e deve ser usado.
