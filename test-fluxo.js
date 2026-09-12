@@ -1166,6 +1166,30 @@ check(ro.montado.wifi_rota === 'olt',
       'modo olt puro: mesmo Huawei vai para a OLT (nao ativa o caminho auto)');
 ENV = {};
 
+// ============ Registro de mensagens (painel) ============
+// O bot grava a conversa em wa_messages. A senha do Wi-Fi e a data de nascimento
+// (2FA) NUNCA podem ir em claro - o painel e lido pela equipe toda.
+console.log('\n=== Registro de conversa: mascara senha e 2FA ===');
+function persistMsg(replyText, inboundText, stepAntes, sessao) {
+  return run('Preparar Persistencia',
+    [{ phone: PHONE_OK, reply_text: replyText, next_step: 'menu',
+       session: sessao || {}, session_patch: {} }],
+    { 'Extract Inbound': { phone: PHONE_OK, text: inboundText },
+      'Get Session': { step: stepAntes, data: JSON.stringify(sessao || {}) } });
+}
+let pm = persistMsg('Aqui está o menu', 'oi', 'menu', {});
+check(pm.msg_in === 'oi', 'mensagem normal do cliente entra em claro');
+check(pm.msg_out === 'Aqui está o menu', 'resposta do bot e registrada');
+
+pm = persistMsg('Confirma a troca?', 'MinhaSenhaSecreta123', 'awaiting_password', {});
+check(pm.msg_in === '••••••', 'senha do Wi-Fi NAO fica em claro no registro');
+
+pm = persistMsg('Certo!', '15/10/2000', 'awaiting_second_factor', {});
+check(pm.msg_in === '••••••', 'data de nascimento (2FA) NAO fica em claro');
+
+pm = persistMsg('ok', 'menu', 'menu', { contrato: 316 });
+check(pm.msg_contrato === '316', 'registro leva o contrato quando existe');
+
 console.log('\n----------------------------------------');
 console.log(ok + ' passaram, ' + fail + ' falharam');
 process.exit(fail ? 1 : 0);

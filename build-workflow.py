@@ -1676,6 +1676,18 @@ if (texto === null || texto === undefined || String(texto).trim() === '') {
           'recomeçar ou *5* para falar com um atendente.';
 }
 
+// Registro da conversa (aba do painel). O que o cliente digitou vem do Extract
+// Inbound; a resposta e o proprio texto. Mascara o sensivel: a senha do Wi-Fi e
+// a data de nascimento (2FA). O painel e lido pela equipe toda, e essas duas
+// nunca podem ficar em claro - o resto do dialogo fica visivel.
+let msgEntrada = '';
+try { msgEntrada = String(($('Extract Inbound').first().json || {}).text || ''); } catch (e) { msgEntrada = ''; }
+let stepAntes = '';
+try { stepAntes = String(($('Get Session').first().json || {}).step || ''); } catch (e) { stepAntes = ''; }
+if (stepAntes === 'awaiting_password' || stepAntes === 'awaiting_second_factor') {
+  msgEntrada = '••••••';
+}
+
 return [{
   json: {
     phone: item.phone,
@@ -1683,6 +1695,9 @@ return [{
     data: JSON.stringify(merged),
     reply_text: texto,
     audit: item._audit ? JSON.stringify(item._audit) : null,
+    msg_in: msgEntrada,
+    msg_out: texto,
+    msg_contrato: (merged && merged.contrato != null) ? String(merged.contrato) : '',
   }
 }];
 """
@@ -2038,6 +2053,26 @@ nodes = [
      "id": "pg-audit", "name": "Gravar Auditoria", "type": "n8n-nodes-base.postgres",
      "typeVersion": 2.4, "position": [2650, -120], "credentials": PG_CRED},
 
+    # Registro da conversa para o painel. Ramo PARALELO ao envio (sai do Upsert
+    # Session junto com o "Tem auditoria?"), entao nunca atrasa nem impede a
+    # resposta ao cliente. onError continua: se o log falhar, o atendimento
+    # segue - a mensagem ja foi/sera enviada de qualquer jeito.
+    # Insere as duas pontas numa tacada; linha vazia nao entra (WHERE).
+    {"parameters": {"operation": "executeQuery",
+                    "query": ("INSERT INTO wa_messages (phone, direcao, texto, contrato)\n"
+                              "SELECT $1, d, t, NULLIF($4, '')\n"
+                              "FROM (VALUES ('in', $2::text), ('out', $3::text)) v(d, t)\n"
+                              "WHERE t IS NOT NULL AND t <> ''\n"
+                              "RETURNING 1;"),
+                    "options": {"queryReplacement":
+                        "={{ [$('Preparar Persistencia').first().json.phone, "
+                        "$('Preparar Persistencia').first().json.msg_in, "
+                        "$('Preparar Persistencia').first().json.msg_out, "
+                        "$('Preparar Persistencia').first().json.msg_contrato] }}"}},
+     "id": "pg-msgs", "name": "Registrar Mensagens", "type": "n8n-nodes-base.postgres",
+     "onError": "continueRegularOutput", "alwaysOutputData": True,
+     "typeVersion": 2.4, "position": [2650, 160], "credentials": PG_CRED},
+
     {"parameters": {
         "method": "POST",
         "url": "={{ $env.EVOLUTION_API_URL }}/message/sendText/{{ $env.EVOLUTION_INSTANCE }}",
@@ -2120,7 +2155,10 @@ connections = {
     "SGP - Abrir Chamado": {"main": [to("Processar Chamado")]},
     "Processar Chamado": {"main": [to(PERSIST)]},
     PERSIST: {"main": [to("Upsert Session")]},
-    "Upsert Session": {"main": [to("Tem auditoria?")]},
+    # Duas saidas do mesmo ponto: a resposta ao cliente (via "Tem auditoria?") e
+    # o registro da conversa, em paralelo. O registro nao esta no caminho da
+    # resposta - se ele falhar, o cliente responde do mesmo jeito.
+    "Upsert Session": {"main": [to("Tem auditoria?") + to("Registrar Mensagens")]},
     "Tem auditoria?": {"main": [to("Gravar Auditoria"), to("Evolution - Enviar Resposta")]},
     "Gravar Auditoria": {"main": [to("Evolution - Enviar Resposta")]},
 }

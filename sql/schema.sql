@@ -34,3 +34,19 @@ CREATE INDEX IF NOT EXISTS idx_wa_wifi_change_log_tipo  ON wa_wifi_change_log (t
 -- Elas podem conter CPF, entao nao devem ficar guardadas indefinidamente.
 -- Agende no cron do servidor:
 --   DELETE FROM wa_sessions WHERE updated_at < now() - interval '30 minutes';
+
+-- Texto das conversas, para a aba do painel. Diferente de wa_sessions (que e
+-- efemera) e de wa_wifi_change_log (que e a acao): aqui fica o dialogo, e ele
+-- PERSISTE - e o historico de atendimento, como um WhatsApp. Uma linha por
+-- mensagem, nos dois sentidos ('in' = cliente, 'out' = bot).
+-- Senha de Wi-Fi e data de nascimento (2FA) NUNCA entram aqui em claro: o bot
+-- mascara essas mensagens antes de gravar.
+CREATE TABLE IF NOT EXISTS wa_messages (
+  id         BIGSERIAL PRIMARY KEY,
+  phone      TEXT NOT NULL,
+  direcao    TEXT NOT NULL CHECK (direcao IN ('in','out')),
+  texto      TEXT,
+  contrato   TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_wa_messages_phone ON wa_messages (phone, created_at);
