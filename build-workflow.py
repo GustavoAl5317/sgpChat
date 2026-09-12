@@ -1799,6 +1799,11 @@ nodes = [
          "renameOutput": True, "outputKey": "abrir_chamado"},
         {"conditions": cond("={{ $json.sgp_action }}", "segunda_via"),
          "renameOutput": True, "outputKey": "segunda_via"},
+        # Sem esta saida, o diagnostico com identidade JA validada (reaproveitada)
+        # caia no fallback e nao fazia nada - o cliente escolhia 4 e nao vinha
+        # resposta. So funcionava quando pedia CPF na hora (outro switch).
+        {"conditions": cond("={{ $json.sgp_action }}", "diagnostico"),
+         "renameOutput": True, "outputKey": "diagnostico"},
     ]}, "options": {"fallbackOutput": "extra", "renameFallbackOutput": "sem_chamada"}},
      "id": "switch-action", "name": "Precisa chamar o SGP?",
      "type": "n8n-nodes-base.switch", "typeVersion": 3.2, "position": [800, 0]},
@@ -2153,6 +2158,7 @@ connections = {
         to("SGP - ONU do Contrato"),     # definir_wifi_olt
         to("SGP - Abrir Chamado"),       # abrir_chamado
         to("SGP - Segunda Via"),         # segunda_via
+        to("SGP - Buscar ONU"),          # diagnostico (identidade ja validada)
         to(PERSIST),                     # fallback: so responder
     ]},
     "SGP - Consultar Cliente": {"main": [to("Processar Consulta CPF")]},

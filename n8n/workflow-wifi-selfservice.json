@@ -260,6 +260,28 @@
               },
               "renameOutput": true,
               "outputKey": "segunda_via"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.sgp_action }}",
+                    "rightValue": "diagnostico",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "diagnostico"
             }
           ]
         },
@@ -1329,6 +1351,13 @@
         [
           {
             "node": "SGP - Segunda Via",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "SGP - Buscar ONU",
             "type": "main",
             "index": 0
           }

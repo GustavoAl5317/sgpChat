@@ -1190,6 +1190,26 @@ check(pm.msg_in === '••••••', 'data de nascimento (2FA) NAO fica em 
 pm = persistMsg('ok', 'menu', 'menu', { contrato: 316 });
 check(pm.msg_contrato === '316', 'registro leva o contrato quando existe');
 
+// ============ Estrutura: o switch principal cobre toda acao ============
+// A harness trata 'diagnostico' direto, entao nao pega uma saida faltando no
+// switch. Este teste le o workflow gerado e confere que cada sgp_action tem
+// saida - foi assim que o diagnostico com identidade reaproveitada ficou mudo.
+console.log('\n=== Switch principal cobre todas as acoes ===');
+try {
+  const wf = JSON.parse(require('fs').readFileSync(__dirname + '/n8n/workflow-wifi-selfservice.json', 'utf8'));
+  const sw = wf.nodes.find(function (n) { return n.name === 'Precisa chamar o SGP?'; });
+  const outs = sw.parameters.rules.values.map(function (r) { return r.outputKey; });
+  ['lookup_cpf', 'definir_wifi', 'definir_wifi_acs', 'definir_wifi_olt',
+   'abrir_chamado', 'segunda_via', 'diagnostico'].forEach(function (acao) {
+    check(outs.indexOf(acao) >= 0, 'switch principal tem saida para ' + acao);
+  });
+  const conns = wf.connections['Precisa chamar o SGP?'].main;
+  check(conns.length === outs.length + 1,
+        'conexoes do switch batem com regras + fallback');
+} catch (e) {
+  check(false, 'nao consegui validar o switch principal: ' + e.message);
+}
+
 console.log('\n----------------------------------------');
 console.log(ok + ' passaram, ' + fail + ' falharam');
 process.exit(fail ? 1 : 0);
