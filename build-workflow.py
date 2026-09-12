@@ -323,7 +323,8 @@ function aposIdentidade(intent, s) {
   }
   if (intent === 'diagnostico') {
     return { sgp_action: 'diagnostico', next_step: 'menu', reply_text: null,
-             sgp_payload: { contrato: s.contrato, mac: s.mac || '' } };
+             sgp_payload: { contrato: s.contrato, mac: s.mac || '',
+                            valor_aberto: s.valor_aberto || 0 } };
   }
   // Sem troca de nome nao ha o que perguntar: pula direto para a senha.
   if (!WIFI_NOME_ON) {
@@ -420,7 +421,8 @@ switch (step) {
       next_step = 'awaiting_contract_choice';
     } else {
       const esc = opcoes[idx - 1];
-      session_patch = { contrato: esc.contrato, contract_options: undefined };
+      session_patch = { contrato: esc.contrato, valor_aberto: esc.valor_aberto || 0,
+                        contract_options: undefined };
       if (session.second_factor_pending) {
         reply_text = 'Para confirmar sua identidade, informe a data de nascimento do titular (DD/MM/AAAA):';
         next_step = 'awaiting_second_factor';
@@ -709,14 +711,15 @@ function confirmarWifi(ssid, senha, modo) {
 // Este node roda separado do Parse & Route e nao enxerga as constantes de la.
 const WIFI_NOME_ON = String($env.WIFI_PERMITE_NOME || 'true').trim().toLowerCase() !== 'false';
 
-function aposIdentidade(it, contrato, mac, ssidAtual) {
+function aposIdentidade(it, contrato, mac, ssidAtual, valorAberto) {
   if (it === 'financeiro') {
     return { sgp_action: 'segunda_via', next_step: 'menu', reply_text: null,
              sgp_payload: { contrato: contrato } };
   }
   if (it === 'diagnostico') {
     return { sgp_action: 'diagnostico', next_step: 'menu', reply_text: null,
-             sgp_payload: { contrato: contrato, mac: mac || '' } };
+             sgp_payload: { contrato: contrato, mac: mac || '',
+                            valor_aberto: valorAberto || 0 } };
   }
   if (it === 'suporte') {
     return { sgp_action: 'none', next_step: 'awaiting_support_desc', sgp_payload: {},
@@ -741,8 +744,22 @@ if (contratos.length === 0) {
   reply_text = 'Não encontrei nenhum contrato com esse CPF/CNPJ. Confira o número ou digite *5* para falar com um atendente.';
   next_step = 'menu';
 } else if (ativos.length === 0) {
-  reply_text = 'Localizei seu cadastro, mas não há contrato ativo no momento. Vou te transferir para um atendente.';
-  next_step = 'human_handoff';
+  // Sem contrato ativo. Se existir um SUSPENSO, o motivo mais comum e falta de
+  // pagamento (suspensao automatica por atraso). Em vez do generico "sem
+  // contrato ativo -> atendente", diz o que esta acontecendo e aponta o caminho
+  // de pagar. Nao mostra valores aqui (o boleto tem dado sensivel e passa pela
+  // confirmacao de identidade); so avisa do corte.
+  const suspenso = contratos.find(function (c) { return c.contratoStatus === 4; });
+  if (suspenso) {
+    reply_text = 'Localizei seu cadastro. ⚠️ Sua conexão está *suspensa por ' +
+      'falta de pagamento*.\n\nAssim que o pagamento é identificado, a conexão ' +
+      'volta automaticamente (pode levar alguns minutos).\n\n' +
+      'Digite *2* para ver o seu boleto e a 2ª via, ou *5* para falar com um atendente.';
+    next_step = 'menu';
+  } else {
+    reply_text = 'Localizei seu cadastro, mas não há contrato ativo no momento. Vou te transferir para um atendente.';
+    next_step = 'human_handoff';
+  }
 } else {
   const ref = ativos[0];
 
@@ -757,6 +774,10 @@ if (contratos.length === 0) {
   // servico_mac casa com o phy_addr da ONU - e o plano B para achar o
   // equipamento quando o filtro por contrato nao retorna nada.
   session_patch.mac = ref.servico_mac || ref.servico_mac2 || '';
+  // Valor em aberto do contrato: alimenta o aviso de "corte por falta de
+  // pagamento" no diagnostico, quando a base mantem o contrato Ativo e bloqueia
+  // no RADIUS/OLT (a suspensao formal, status 4, e tratada la em cima).
+  session_patch.valor_aberto = parseFloat(ref.contratoValorAberto) || 0;
   // Usuario PPPoE: chave de juncao preferida com o GenieACS no modo
   // 'genieacs', porque e o unico campo que o SGP e o equipamento enxergam
   // com o mesmo valor. O MAC entra so como segundo candidato.
@@ -771,6 +792,7 @@ if (contratos.length === 0) {
     // Cliente com mais de um contrato ativo: precisa escolher qual
     session_patch.contract_options = ativos.slice(0, 9).map(function (c) {
       return { contrato: c.contratoId,
+               valor_aberto: parseFloat(c.contratoValorAberto) || 0,
                label: (c.servico_plano || c.planointernet || 'Plano') + ' - ' +
                       (c.endereco_logradouro || '') + ' ' + (c.endereco_numero || '') };
     });
@@ -787,7 +809,7 @@ if (contratos.length === 0) {
       // outros modulos podem ser usados sem repetir CPF.
       session_patch.verified_at = Date.now();
       const d = aposIdentidade(intent, ref.contratoId, session_patch.mac,
-                               session_patch.wifi_ssid_atual);
+                               session_patch.wifi_ssid_atual, session_patch.valor_aberto);
       reply_text = d.reply_text;
       next_step = d.next_step;
       sgp_action = d.sgp_action;
@@ -1478,6 +1500,18 @@ return [{ json: Object.assign({}, prev, {
 JS_PROC_BUSCA_ONU = r"""
 const prev = $('Parse & Route').first().json;
 
+// A carga do diagnostico (contrato, mac, valor em aberto) chega por dois
+// caminhos: reaproveitando a identidade, o proprio Parse & Route ja traz;
+// quando pediu o CPF agora, quem traz e o Processar Consulta CPF - e ali o
+// Parse & Route deste turno carrega so o 'lookup_cpf', sem contrato. Ler so o
+// Parse & Route deixaria o filtro por contrato (e a auditoria) sem o contrato
+// no caminho do CPF. Entao pega de quem realmente tiver a carga de diagnostico.
+function jsonDe(node) { try { return $(node).first().json; } catch (e) { return null; } }
+const viaCpf = jsonDe('Processar Consulta CPF');
+const carga = (viaCpf && viaCpf.sgp_payload && viaCpf.sgp_payload.contrato != null)
+  ? viaCpf.sgp_payload
+  : ((prev.sgp_payload && prev.sgp_payload.contrato != null) ? prev.sgp_payload : (prev.sgp_payload || {}));
+
 // /api/fttx/onu/list/ devolve um array. Filtrar por ?contrato= e o caminho
 // natural, mas nem toda base tem esse vinculo preenchido - por isso o node
 // seguinte tenta de novo por phy_addr (que casa com servico_mac do contrato).
@@ -1496,8 +1530,8 @@ if (itens.length === 1 && Array.isArray(itens[0])) {
     return o && typeof o === 'object' && (o.slot !== undefined || o.id !== undefined);
   });
 }
-const mac = String((prev.sgp_payload && prev.sgp_payload.mac) || '').replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
-const alvoContrato = String((prev.sgp_payload && prev.sgp_payload.contrato) || '');
+const mac = String(carga.mac || '').replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+const alvoContrato = String(carga.contrato || '');
 
 // O filtro por ?contrato= nem sempre e respeitado nesta base: as vezes o
 // endpoint devolve a base inteira. Quando isso acontece e o desempate cai em
@@ -1535,6 +1569,9 @@ if (candidatas.length === 1) {
 return [{ json: Object.assign({}, prev, {
   onu_id: escolhida ? escolhida.id : null,
   onu_basica: escolhida || null,
+  // Garante contrato/mac/valor_aberto adiante mesmo no caminho do CPF, onde o
+  // Parse & Route deste turno so tem o 'lookup_cpf'.
+  sgp_payload: Object.assign({}, prev.sgp_payload, carga),
 }) }];
 """
 
@@ -1628,6 +1665,13 @@ if (md) {
 const REBOOT = 'desligue o roteador da tomada, espere 30 segundos e ligue de novo';
 const temEquip = !!(base.type || onu.modelo || dbm !== null);
 
+// Corte por falta de pagamento: quando a base mantem o contrato Ativo e bloqueia
+// no RADIUS/OLT, o sinal otico continua "bom" (o equipamento segue na fibra),
+// mas o cliente fica sem internet. Se ha valor em aberto, avisamos - foi o
+// pedido do provedor. (A suspensao formal, status 4, ja e avisada na
+// identificacao.)
+const valorAberto = Number((prev.sgp_payload && prev.sgp_payload.valor_aberto) || 0);
+
 let reply_text;
 if (!cls) {
   // ONU localizada, mas nao deu para confirmar o sinal (OLT fora do ar etc.)
@@ -1635,6 +1679,14 @@ if (!cls) {
     'da sua internet agora.\n\n' +
     'Tente o seguinte: ' + REBOOT + '. Se não resolver, digite *3* para abrir ' +
     'um chamado ou *5* para falar com um atendente.';
+} else if (cls.nivel === 'bom' && valorAberto > 0) {
+  // Sinal bom + divida: classico bloqueio no RADIUS por falta de pagamento. O
+  // pagamento domina a resposta - de nada adianta falar de reiniciar o roteador.
+  reply_text = 'Seu equipamento está conectado e o sinal da sua fibra está bom — ' +
+    'do nosso lado a conexão está no ar.\n\n⚠️ Mas há *valores em aberto* no seu ' +
+    'contrato. Se você está sem internet, é muito provavelmente um *bloqueio por ' +
+    'falta de pagamento*.\n\nDigite *2* para ver o seu boleto — a conexão volta ' +
+    'sozinha assim que o pagamento é identificado.';
 } else if (cls.nivel === 'bom') {
   if (horasAtras !== null && horasAtras > 48) {
     reply_text = '✅ Testei a sua conexão e, na última verificação, o sinal estava ' +
@@ -1654,6 +1706,15 @@ if (!cls) {
     'está fraco e o ideal é uma visita técnica.\n\nDigite *3* para abrir um ' +
     'chamado que a gente resolve para você.';
 }
+
+// Nos demais casos (sinal ruim/atencao, ou sem leitura), se ainda houver valor
+// em aberto, acrescenta a ressalva - o bloqueio por pagamento pode conviver com
+// um problema de sinal. O caso "sinal bom + divida" ja foi tratado acima.
+if (valorAberto > 0 && !(cls && cls.nivel === 'bom')) {
+  reply_text += '\n\n⚠️ Também há *valores em aberto* no seu contrato. Se a sua ' +
+    'internet está bloqueada, pode ser por falta de pagamento — digite *2* para ' +
+    'ver o seu boleto.';
+}
 reply_text += '\n\nDigite *menu* para voltar ao início.';
 
 const session_patch = Object.assign({}, prev.session_patch, { reset: true });
@@ -1670,7 +1731,8 @@ return [{ json: Object.assign({}, prev, {
     ssid_novo: null,
     sucesso: temEquip,
     resposta_sgp: { onu_id: prev.onu_id, cto: onu.cto || null, sinal_dbm: dbm,
-                    sinal_origem: origem, medido_em: medidoEm || null },
+                    sinal_origem: origem, medido_em: medidoEm || null,
+                    valor_aberto: valorAberto },
   },
 }) }];
 """

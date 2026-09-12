@@ -567,6 +567,45 @@ const ttx = ateIdentidade('4', PHONE_OK,
   { lista: onuReal('2.326', AGORA), detalhe: SEM_DETALHE, info: null }).t;
 check(ttx.audit.resposta_sgp.sinal_dbm === null, 'valor de Tx nao e usado como sinal recebido');
 
+// ---- Corte por falta de pagamento ----
+// (a) Contrato SUSPENSO (status 4): a base marcou a suspensao automatica por
+// atraso. Avisa ja na identificacao e aponta o boleto, em vez de jogar no
+// atendente sem explicar.
+const respSusp = { msg: '', contratos: [
+  Object.assign({}, RESP.contratos.find(function (c) { return c.contratoStatus === 1; }),
+                { contratoStatus: 4, contratoStatusDisplay: 'Suspenso' }) ] };
+const tsusp = turn({ step: 'awaiting_cpf', data: '{}' }, CPF, PHONE_OK, respSusp);
+check(/suspensa por falta de pagamento/i.test(tsusp.reply), 'contrato suspenso -> avisa corte por falta de pagamento');
+check(tsusp.step !== 'human_handoff', 'contrato suspenso nao vai direto para o atendente');
+check(/\*2\*/.test(tsusp.reply), 'contrato suspenso -> aponta o boleto (opcao 2)');
+
+// Roda o diagnostico com uma resp de CPF especifica (nao a global do ateIdentidade)
+function diagDe(resp, diag) {
+  let s = null;
+  let t = turn(s, '4', PHONE_OK); s = t.sessionRow;
+  t = turn(s, CPF, PHONE_OK, resp, FATURAS, diag); s = t.sessionRow;
+  if (t.step === 'awaiting_contract_choice') t = turn(s, '1', PHONE_OK, resp, FATURAS, diag);
+  return t;
+}
+
+// (b) Contrato ATIVO com valor em aberto + sinal bom: e o classico bloqueio no
+// RADIUS por falta de pagamento (a ONU segue online na fibra, o sinal e bom,
+// mas nao ha internet). O diagnostico precisa avisar disso.
+const respDev = JSON.parse(JSON.stringify(RESP));
+respDev.contratos.forEach(function (c) { if (c.contratoStatus === 1) c.contratoValorAberto = 149.9; });
+const tdev = diagDe(respDev, { lista: onuReal('-15.656', AGORA), detalhe: SEM_DETALHE, info: null });
+console.log('  bot:', JSON.stringify(tdev.reply));
+check(/sinal da sua fibra está bom|conexão está no ar/i.test(tdev.reply), 'sinal bom continua sendo informado');
+check(/bloqueio por.*falta de pagamento/i.test(tdev.reply) && /\*2\*/.test(tdev.reply),
+      'valor em aberto + sinal bom -> avisa provavel bloqueio por pagamento e aponta o boleto');
+check(!/dBm/i.test(tdev.reply), 'mesmo com aviso de pagamento, sem jargao tecnico');
+check(Math.abs((tdev.audit.resposta_sgp.valor_aberto || 0) - 149.9) < 0.01,
+      'auditoria guarda o valor em aberto do diagnostico');
+
+// (c) Contrato ativo SEM valor em aberto: diagnostico normal, sem falar de pagamento.
+const tsemdiv = diagDe(RESP, { lista: onuReal('-15.656', AGORA), detalhe: SEM_DETALHE, info: null });
+check(!/falta de pagamento/i.test(tsemdiv.reply), 'sem valor em aberto -> diagnostico nao menciona pagamento');
+
 // ============ Wi-Fi desligado (provedor sem Gerenciador de CPE) ============
 // Sem ACS cadastrado no SGP a opcao 1 falha SEMPRE, no ultimo passo, depois de
 // o cliente ja ter provado quem e e escolhido nome e senha. Melhor nao oferecer.
