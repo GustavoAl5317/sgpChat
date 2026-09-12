@@ -84,6 +84,21 @@ check(any("wifi_0/5 name Rede" in c for c in cmds), "renomeia a rede de 5 GHz")
 check(any("wifi_0/1 key SenhaBoa123" in c for c in cmds), "troca a senha de 2.4 GHz")
 check(any("wifi_0/5 key SenhaBoa123" in c for c in cmds), "troca a senha de 5 GHz")
 
+# WPA2-AES: toda troca de senha forca modo wpa2-psk e criptografia aes, para o
+# cliente nunca ficar em "Seguranca Fraca" (WPA/TKIP). Sintaxe do CLI da OLT ZTE.
+check(any("wifi_0/1 auth-algrithm wpa2-psk" in c for c in cmds), "forca WPA2 na 2.4 GHz")
+check(any("wifi_0/1 encrypt-algrithm aes" in c for c in cmds), "forca AES na 2.4 GHz")
+check(any("wifi_0/5 auth-algrithm wpa2-psk" in c for c in cmds), "forca WPA2 na 5 GHz")
+check(any("wifi_0/5 encrypt-algrithm aes" in c for c in cmds), "forca AES na 5 GHz")
+# A seguranca vem ANTES da chave (o modo precisa estar setado quando a key entra).
+i_modo = next(i for i, c in enumerate(cmds) if "wifi_0/1 auth-algrithm" in c)
+i_key = next(i for i, c in enumerate(cmds) if "wifi_0/1 key" in c)
+check(i_modo < i_key, "seguranca e definida antes da chave")
+
+# Sem senha, nao mexe na seguranca (nada de auth-algrithm num pedido so de nome).
+so_nome = servico.montar_comandos({"onu": "gpon_onu-1/2/2:1", "ssid": "Rede", "senha": None})
+check(not any("algrithm" in c for c in so_nome), "pedido so de nome nao toca na seguranca")
+
 # Campo omitido nao vira comando: quem pediu so a senha nao pode ter a rede
 # renomeada de brinde.
 so_senha = servico.montar_comandos({"onu": "gpon_onu-1/2/2:1", "ssid": None,

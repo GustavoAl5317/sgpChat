@@ -44,6 +44,11 @@ PORTA = int(os.environ.get("OLT_WIFI_PORT", "8080"))
 WIFI_24 = os.environ.get("OLT_WIFI_IF_24", "wifi_0/1")
 WIFI_5G = os.environ.get("OLT_WIFI_IF_5G", "wifi_0/5")
 
+# Toda troca sai em WPA2-AES puro. O padrao de fabrica de muita ONU e WPA/WPA2
+# misto com TKIP, que o iPhone marca como "Seguranca Fraca" (e TKIP e fraco
+# mesmo). OLT_FORCA_WPA2=false desliga, caso algum modelo nao aceite.
+FORCA_WPA2 = str(os.environ.get("OLT_FORCA_WPA2", "true")).strip().lower() != "false"
+
 # Perfis de ONU que declaram as duas bandas.
 #
 # A OLT so aceita escrever num indice de Wi-Fi que o perfil (onu-type) da ONU
@@ -134,6 +139,11 @@ def montar_comandos(d):
         if d["ssid"]:
             cmds.append("ssid ctrl %s name %s" % (iface, d["ssid"]))
         if d["senha"]:
+            # WPA2-AES antes da chave: modo wpa2-psk (nao o misto wpa-wpa2) e
+            # criptografia aes (nao tkip). Sintaxe conferida no CLI da OLT ZTE.
+            if FORCA_WPA2:
+                cmds.append("ssid auth wpa %s auth-algrithm wpa2-psk" % iface)
+                cmds.append("ssid auth wpa %s encrypt-algrithm aes" % iface)
             cmds.append("ssid auth wpa %s key %s" % (iface, d["senha"]))
     cmds.append("end")
     return cmds
