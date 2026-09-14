@@ -1410,42 +1410,41 @@ function dataBR(iso) {
 }
 
 let reply_text, next_step = 'menu';
+// Enviados em mensagens separadas depois da principal: o PIX sozinho (para o
+// WhatsApp mostrar o botao "Copiar chave Pix") e o boleto em PDF.
+let pix_code = '', boleto_url = '';
 
 if (!links.length) {
   reply_text = 'Boa notícia: você não tem nenhuma fatura em aberto no momento.\n\nDigite *menu* para voltar ao início.';
 } else {
-  // Mais antigas primeiro (as vencidas importam mais). Limita a 3 para nao
-  // despejar uma parede de texto - base real pode ter dezenas de titulos.
+  // Regra do provedor: traz as vencidas + a do mes atual (o filtro 'links' ja
+  // cortou as futuras). A mais antiga vem primeiro - e a que reativa quando paga,
+  // entao o PIX e o PDF sao dela.
   const ordenados = links.slice().sort(function (a, b) {
     return String(a.vencimento || '').localeCompare(String(b.vencimento || ''));
   });
-  const mostrar = ordenados.slice(0, 3);
+  const f0 = ordenados[0];
+  const nome = (resp && resp.razaoSocial) || (prev.session && prev.session.nome) || '';
 
-  const blocos = mostrar.map(function (f) {
-    let t = '*Vencimento:* ' + dataBR(f.vencimento) + '\n*Valor:* ' + brl(f.valor);
-    if (Number(f.juros || 0) > 0 || Number(f.multa || 0) > 0) {
-      t += '  _(já com juros e multa)_';
-    }
-    // PIX copia-e-cola primeiro: e o jeito mais rapido de pagar e regularizar.
-    // O bot so ENTREGA o codigo - quem paga e o cliente, no banco/app dele.
-    if (f.codigopix) t += '\n\n*PIX copia e cola:*\n`' + f.codigopix + '`';
-    if (f.linhadigitavel) t += '\n\n*Linha digitável (boleto):*\n`' + f.linhadigitavel + '`';
-    if (f.link) t += '\n' + f.link;
-    return t;
+  const linhasFat = ordenados.map(function (f) {
+    let l = '*Vencimento:* ' + dataBR(f.vencimento) + '\n*Valor:* ' + brl(f.valor);
+    if (Number(f.juros || 0) > 0 || Number(f.multa || 0) > 0) l += '  _(já com juros e multa)_';
+    return l;
   });
 
-  reply_text = (links.length > 3
-      ? 'Você tem *' + links.length + '* faturas em aberto. Mostrando as ' + mostrar.length + ' mais antigas:\n\n'
-      : (links.length === 1 ? 'Aqui está sua fatura em aberto:\n\n'
-                            : 'Você tem *' + links.length + '* faturas em aberto:\n\n'))
-    + blocos.join('\n\n---\n\n')
-    + '\n\n_Depois de pagar, o acesso normaliza automaticamente assim que o ' +
-      'pagamento é identificado (pode levar alguns minutos)._'
-    + '\n\nDigite *menu* para voltar ao início.';
-
-  if (links.length > 3) {
-    reply_text += '\n_Para ver todas, fale com um atendente (opção 5)._';
+  let t = (ordenados.length === 1 ? 'Segue os dados do boleto:\n\n' : 'Seus boletos em aberto:\n\n');
+  t += linhasFat.join('\n\n');
+  if (nome) t += '\n\n*Nome:* ' + nome;
+  t += '\n\n_Depois de pagar, o acesso normaliza automaticamente (pode levar alguns minutos)._';
+  if (f0.codigopix) {
+    t += (ordenados.length === 1
+      ? '\n\n👇 *Código PIX* (toque na mensagem abaixo para copiar):'
+      : '\n\n👇 *Código PIX da fatura mais antiga* (a que reativa) — na mensagem abaixo:');
   }
+  reply_text = t;
+
+  pix_code = f0.codigopix || '';
+  boleto_url = f0.link || '';
 }
 
 const session_patch = Object.assign({}, prev.session_patch, { reset: true });
@@ -1453,6 +1452,8 @@ const session_patch = Object.assign({}, prev.session_patch, { reset: true });
 return [{ json: Object.assign({}, prev, {
   reply_text: reply_text,
   next_step: next_step,
+  pix_code: pix_code,
+  boleto_url: boleto_url,
   session_patch: session_patch,
   _audit: {
     tipo: 'segunda_via',
@@ -1879,6 +1880,10 @@ return [{
     msg_in: msgEntrada,
     msg_out: texto,
     msg_contrato: (merged && merged.contrato != null) ? String(merged.contrato) : '',
+    // Envios extras (2a via): o PIX sozinho e o boleto em PDF, mandados depois
+    // da mensagem principal. Vazios nos demais fluxos -> nao enviam nada.
+    pix_code: item.pix_code || '',
+    boleto_url: item.boleto_url || '',
   }
 }];
 """
@@ -2340,6 +2345,55 @@ nodes = [
         "options": {"timeout": 20000}},
      "id": "http-send", "name": "Evolution - Enviar Resposta",
      "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2, "position": [2850, 0]},
+
+    # --- Envios extras da 2a via, DEPOIS da mensagem principal ---
+    # (1) o PIX copia-e-cola sozinho: mandado como mensagem propria para o
+    #     WhatsApp reconhecer e mostrar o botao "Copiar chave Pix".
+    {"parameters": {
+        "conditions": {"options": {"caseSensitive": True, "leftValue": "", "typeValidation": "loose"},
+                       "conditions": [{"leftValue": "={{ $('Preparar Persistencia').first().json.pix_code }}",
+                                       "rightValue": "",
+                                       "operator": {"type": "string", "operation": "notEmpty",
+                                                    "singleValue": True}}],
+                       "combinator": "and"}, "options": {}},
+     "id": "if-pix", "name": "Tem PIX?", "type": "n8n-nodes-base.if",
+     "typeVersion": 2.2, "position": [3050, 0]},
+
+    {"parameters": {
+        "method": "POST",
+        "url": "={{ $env.EVOLUTION_API_URL }}/message/sendText/{{ $env.EVOLUTION_INSTANCE }}",
+        "sendBody": True, "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ number: $('Preparar Persistencia').first().json.phone, text: $('Preparar Persistencia').first().json.pix_code }) }}",
+        "sendHeaders": True,
+        "headerParameters": {"parameters": [{"name": "apikey", "value": "={{ $env.EVOLUTION_API_KEY }}"}]},
+        "options": {"timeout": 20000}},
+     "id": "http-send-pix", "name": "Evolution - Enviar PIX",
+     "type": "n8n-nodes-base.httpRequest", "onError": "continueRegularOutput",
+     "alwaysOutputData": True, "typeVersion": 4.2, "position": [3250, -80]},
+
+    # (2) o boleto em PDF. Se a URL do TSMX nao servir como PDF, o send falha
+    #     sozinho (onError continua) - a mensagem principal e o PIX ja sairam.
+    {"parameters": {
+        "conditions": {"options": {"caseSensitive": True, "leftValue": "", "typeValidation": "loose"},
+                       "conditions": [{"leftValue": "={{ $('Preparar Persistencia').first().json.boleto_url }}",
+                                       "rightValue": "",
+                                       "operator": {"type": "string", "operation": "notEmpty",
+                                                    "singleValue": True}}],
+                       "combinator": "and"}, "options": {}},
+     "id": "if-boleto", "name": "Tem boleto?", "type": "n8n-nodes-base.if",
+     "typeVersion": 2.2, "position": [3450, 0]},
+
+    {"parameters": {
+        "method": "POST",
+        "url": "={{ $env.EVOLUTION_API_URL }}/message/sendMedia/{{ $env.EVOLUTION_INSTANCE }}",
+        "sendBody": True, "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ number: $('Preparar Persistencia').first().json.phone, mediatype: 'document', mimetype: 'application/pdf', fileName: 'Boleto.pdf', media: $('Preparar Persistencia').first().json.boleto_url }) }}",
+        "sendHeaders": True,
+        "headerParameters": {"parameters": [{"name": "apikey", "value": "={{ $env.EVOLUTION_API_KEY }}"}]},
+        "options": {"timeout": 25000}},
+     "id": "http-send-boleto", "name": "Evolution - Enviar Boleto",
+     "type": "n8n-nodes-base.httpRequest", "onError": "continueRegularOutput",
+     "alwaysOutputData": True, "typeVersion": 4.2, "position": [3650, -80]},
 ]
 
 
@@ -2429,6 +2483,12 @@ connections = {
     "Marcar Humano": {"main": [to("Tem auditoria?")]},
     "Tem auditoria?": {"main": [to("Gravar Auditoria"), to("Evolution - Enviar Resposta")]},
     "Gravar Auditoria": {"main": [to("Evolution - Enviar Resposta")]},
+    # Depois da mensagem principal: PIX sozinho (botao copiar) e o boleto em PDF.
+    # Cada um so dispara se o campo existir (2a via); nos outros fluxos, nada sai.
+    "Evolution - Enviar Resposta": {"main": [to("Tem PIX?")]},
+    "Tem PIX?": {"main": [to("Evolution - Enviar PIX"), to("Tem boleto?")]},
+    "Evolution - Enviar PIX": {"main": [to("Tem boleto?")]},
+    "Tem boleto?": {"main": [to("Evolution - Enviar Boleto"), []]},
 }
 
 wf = {"name": "WhatsApp Autoatendimento ISP (Evolution API + SGP)",

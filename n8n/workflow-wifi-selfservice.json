@@ -868,7 +868,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const prev = $('Parse & Route').first().json;\nconst resp = $input.first().json;\n\n// Resposta do SGP: { status, razaoSocial, links: [ {fatura, vencimento, valor,\n// valor_original, linhadigitavel, link, link_cobranca, juros, multa} ] }\nconst todos = Array.isArray(resp && resp.links) ? resp.links : [];\n\n// Regra do provedor: mostrar as VENCIDAS e a do mes atual; NUNCA as de meses a\n// frente. O SGP pode ter boletos futuros ja gerados, e nao se oferece o cliente\n// pagar adiantado - so o que esta vencido ou vence neste mes.\nfunction anoMes(d) { return d.getFullYear() * 100 + (d.getMonth() + 1); }\nfunction ymVenc(iso) {\n  const m = String(iso || '').match(/^(\\d{4})-(\\d{2})/);\n  // Sem data legivel: trata como antiga (mostra) - some-lo poderia esconder uma\n  // fatura vencida de verdade, o que e pior que mostrar uma a mais.\n  return m ? (Number(m[1]) * 100 + Number(m[2])) : 0;\n}\nconst limiteYM = anoMes(new Date());\nconst links = todos.filter(function (f) { return ymVenc(f.vencimento) <= limiteYM; });\n\nfunction brl(v) {\n  const n = Number(v || 0);\n  return 'R$ ' + n.toFixed(2).replace('.', ',');\n}\nfunction dataBR(iso) {\n  const m = String(iso || '').match(/^(\\d{4})-(\\d{2})-(\\d{2})/);\n  return m ? (m[3] + '/' + m[2] + '/' + m[1]) : String(iso || '');\n}\n\nlet reply_text, next_step = 'menu';\n\nif (!links.length) {\n  reply_text = 'Boa notícia: você não tem nenhuma fatura em aberto no momento.\\n\\nDigite *menu* para voltar ao início.';\n} else {\n  // Mais antigas primeiro (as vencidas importam mais). Limita a 3 para nao\n  // despejar uma parede de texto - base real pode ter dezenas de titulos.\n  const ordenados = links.slice().sort(function (a, b) {\n    return String(a.vencimento || '').localeCompare(String(b.vencimento || ''));\n  });\n  const mostrar = ordenados.slice(0, 3);\n\n  const blocos = mostrar.map(function (f) {\n    let t = '*Vencimento:* ' + dataBR(f.vencimento) + '\\n*Valor:* ' + brl(f.valor);\n    if (Number(f.juros || 0) > 0 || Number(f.multa || 0) > 0) {\n      t += '  _(já com juros e multa)_';\n    }\n    // PIX copia-e-cola primeiro: e o jeito mais rapido de pagar e regularizar.\n    // O bot so ENTREGA o codigo - quem paga e o cliente, no banco/app dele.\n    if (f.codigopix) t += '\\n\\n*PIX copia e cola:*\\n`' + f.codigopix + '`';\n    if (f.linhadigitavel) t += '\\n\\n*Linha digitável (boleto):*\\n`' + f.linhadigitavel + '`';\n    if (f.link) t += '\\n' + f.link;\n    return t;\n  });\n\n  reply_text = (links.length > 3\n      ? 'Você tem *' + links.length + '* faturas em aberto. Mostrando as ' + mostrar.length + ' mais antigas:\\n\\n'\n      : (links.length === 1 ? 'Aqui está sua fatura em aberto:\\n\\n'\n                            : 'Você tem *' + links.length + '* faturas em aberto:\\n\\n'))\n    + blocos.join('\\n\\n---\\n\\n')\n    + '\\n\\n_Depois de pagar, o acesso normaliza automaticamente assim que o ' +\n      'pagamento é identificado (pode levar alguns minutos)._'\n    + '\\n\\nDigite *menu* para voltar ao início.';\n\n  if (links.length > 3) {\n    reply_text += '\\n_Para ver todas, fale com um atendente (opção 5)._';\n  }\n}\n\nconst session_patch = Object.assign({}, prev.session_patch, { reset: true });\n\nreturn [{ json: Object.assign({}, prev, {\n  reply_text: reply_text,\n  next_step: next_step,\n  session_patch: session_patch,\n  _audit: {\n    tipo: 'segunda_via',\n    phone: prev.phone,\n    cpf: prev.session.cpf,\n    contrato: prev.sgp_payload.contrato,\n    ssid_novo: null,\n    sucesso: links.length > 0,\n    // Nao guarda linha digitavel nem link no log de auditoria: sao dados de\n    // pagamento. So o suficiente para rastrear a consulta.\n    resposta_sgp: { status: resp && resp.status, qtd_faturas: links.length },\n  },\n}) }];"
+        "jsCode": "const prev = $('Parse & Route').first().json;\nconst resp = $input.first().json;\n\n// Resposta do SGP: { status, razaoSocial, links: [ {fatura, vencimento, valor,\n// valor_original, linhadigitavel, link, link_cobranca, juros, multa} ] }\nconst todos = Array.isArray(resp && resp.links) ? resp.links : [];\n\n// Regra do provedor: mostrar as VENCIDAS e a do mes atual; NUNCA as de meses a\n// frente. O SGP pode ter boletos futuros ja gerados, e nao se oferece o cliente\n// pagar adiantado - so o que esta vencido ou vence neste mes.\nfunction anoMes(d) { return d.getFullYear() * 100 + (d.getMonth() + 1); }\nfunction ymVenc(iso) {\n  const m = String(iso || '').match(/^(\\d{4})-(\\d{2})/);\n  // Sem data legivel: trata como antiga (mostra) - some-lo poderia esconder uma\n  // fatura vencida de verdade, o que e pior que mostrar uma a mais.\n  return m ? (Number(m[1]) * 100 + Number(m[2])) : 0;\n}\nconst limiteYM = anoMes(new Date());\nconst links = todos.filter(function (f) { return ymVenc(f.vencimento) <= limiteYM; });\n\nfunction brl(v) {\n  const n = Number(v || 0);\n  return 'R$ ' + n.toFixed(2).replace('.', ',');\n}\nfunction dataBR(iso) {\n  const m = String(iso || '').match(/^(\\d{4})-(\\d{2})-(\\d{2})/);\n  return m ? (m[3] + '/' + m[2] + '/' + m[1]) : String(iso || '');\n}\n\nlet reply_text, next_step = 'menu';\n// Enviados em mensagens separadas depois da principal: o PIX sozinho (para o\n// WhatsApp mostrar o botao \"Copiar chave Pix\") e o boleto em PDF.\nlet pix_code = '', boleto_url = '';\n\nif (!links.length) {\n  reply_text = 'Boa notícia: você não tem nenhuma fatura em aberto no momento.\\n\\nDigite *menu* para voltar ao início.';\n} else {\n  // Regra do provedor: traz as vencidas + a do mes atual (o filtro 'links' ja\n  // cortou as futuras). A mais antiga vem primeiro - e a que reativa quando paga,\n  // entao o PIX e o PDF sao dela.\n  const ordenados = links.slice().sort(function (a, b) {\n    return String(a.vencimento || '').localeCompare(String(b.vencimento || ''));\n  });\n  const f0 = ordenados[0];\n  const nome = (resp && resp.razaoSocial) || (prev.session && prev.session.nome) || '';\n\n  const linhasFat = ordenados.map(function (f) {\n    let l = '*Vencimento:* ' + dataBR(f.vencimento) + '\\n*Valor:* ' + brl(f.valor);\n    if (Number(f.juros || 0) > 0 || Number(f.multa || 0) > 0) l += '  _(já com juros e multa)_';\n    return l;\n  });\n\n  let t = (ordenados.length === 1 ? 'Segue os dados do boleto:\\n\\n' : 'Seus boletos em aberto:\\n\\n');\n  t += linhasFat.join('\\n\\n');\n  if (nome) t += '\\n\\n*Nome:* ' + nome;\n  t += '\\n\\n_Depois de pagar, o acesso normaliza automaticamente (pode levar alguns minutos)._';\n  if (f0.codigopix) {\n    t += (ordenados.length === 1\n      ? '\\n\\n👇 *Código PIX* (toque na mensagem abaixo para copiar):'\n      : '\\n\\n👇 *Código PIX da fatura mais antiga* (a que reativa) — na mensagem abaixo:');\n  }\n  reply_text = t;\n\n  pix_code = f0.codigopix || '';\n  boleto_url = f0.link || '';\n}\n\nconst session_patch = Object.assign({}, prev.session_patch, { reset: true });\n\nreturn [{ json: Object.assign({}, prev, {\n  reply_text: reply_text,\n  next_step: next_step,\n  pix_code: pix_code,\n  boleto_url: boleto_url,\n  session_patch: session_patch,\n  _audit: {\n    tipo: 'segunda_via',\n    phone: prev.phone,\n    cpf: prev.session.cpf,\n    contrato: prev.sgp_payload.contrato,\n    ssid_novo: null,\n    sucesso: links.length > 0,\n    // Nao guarda linha digitavel nem link no log de auditoria: sao dados de\n    // pagamento. So o suficiente para rastrear a consulta.\n    resposta_sgp: { status: resp && resp.status, qtd_faturas: links.length },\n  },\n}) }];"
       },
       "id": "code-proc-fatura",
       "name": "Processar Segunda Via",
@@ -1139,7 +1139,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const item = $input.first().json;\nconst patch = item.session_patch || {};\n// patch.reset limpa a sessao inteira (fim de atendimento ou cliente digitou \"menu\")\nconst merged = patch.reset ? {} : Object.assign({}, item.session || {}, patch);\ndelete merged.reset;\nObject.keys(merged).forEach(function (k) { if (merged[k] === undefined) delete merged[k]; });\n\n// Chegar aqui sem texto e bug: todo caminho deveria ter montado uma resposta.\n// So que mandar texto vazio faz a Evolution responder 400, o node de envio\n// quebra e o cliente fica sem NADA - o pior desfecho possivel. Entao troca por\n// uma saida generica e deixa rastro no log para a gente achar o caminho furado.\nlet texto = item.reply_text;\nif (texto === null || texto === undefined || String(texto).trim() === '') {\n  console.log('[bug] reply_text vazio | phone=' + (item.phone || '?') +\n              ' step=' + (item.next_step || '?') + ' acao=' + (item.sgp_action || '?'));\n  texto = 'Tive um problema para montar a resposta agora. Digite *menu* para ' +\n          'recomeçar ou *5* para falar com um atendente.';\n}\n\n// Registro da conversa (aba do painel). O que o cliente digitou vem do Extract\n// Inbound; a resposta e o proprio texto. Mascara o sensivel: a senha do Wi-Fi e\n// a data de nascimento (2FA). O painel e lido pela equipe toda, e essas duas\n// nunca podem ficar em claro - o resto do dialogo fica visivel.\nlet msgEntrada = '';\ntry { msgEntrada = String(($('Extract Inbound').first().json || {}).text || ''); } catch (e) { msgEntrada = ''; }\nlet stepAntes = '';\ntry { stepAntes = String(($('Get Session').first().json || {}).step || ''); } catch (e) { stepAntes = ''; }\nif (stepAntes === 'awaiting_password' || stepAntes === 'awaiting_second_factor') {\n  msgEntrada = '••••••';\n}\n\nreturn [{\n  json: {\n    phone: item.phone,\n    step: item.next_step,\n    data: JSON.stringify(merged),\n    reply_text: texto,\n    audit: item._audit ? JSON.stringify(item._audit) : null,\n    msg_in: msgEntrada,\n    msg_out: texto,\n    msg_contrato: (merged && merged.contrato != null) ? String(merged.contrato) : '',\n  }\n}];"
+        "jsCode": "const item = $input.first().json;\nconst patch = item.session_patch || {};\n// patch.reset limpa a sessao inteira (fim de atendimento ou cliente digitou \"menu\")\nconst merged = patch.reset ? {} : Object.assign({}, item.session || {}, patch);\ndelete merged.reset;\nObject.keys(merged).forEach(function (k) { if (merged[k] === undefined) delete merged[k]; });\n\n// Chegar aqui sem texto e bug: todo caminho deveria ter montado uma resposta.\n// So que mandar texto vazio faz a Evolution responder 400, o node de envio\n// quebra e o cliente fica sem NADA - o pior desfecho possivel. Entao troca por\n// uma saida generica e deixa rastro no log para a gente achar o caminho furado.\nlet texto = item.reply_text;\nif (texto === null || texto === undefined || String(texto).trim() === '') {\n  console.log('[bug] reply_text vazio | phone=' + (item.phone || '?') +\n              ' step=' + (item.next_step || '?') + ' acao=' + (item.sgp_action || '?'));\n  texto = 'Tive um problema para montar a resposta agora. Digite *menu* para ' +\n          'recomeçar ou *5* para falar com um atendente.';\n}\n\n// Registro da conversa (aba do painel). O que o cliente digitou vem do Extract\n// Inbound; a resposta e o proprio texto. Mascara o sensivel: a senha do Wi-Fi e\n// a data de nascimento (2FA). O painel e lido pela equipe toda, e essas duas\n// nunca podem ficar em claro - o resto do dialogo fica visivel.\nlet msgEntrada = '';\ntry { msgEntrada = String(($('Extract Inbound').first().json || {}).text || ''); } catch (e) { msgEntrada = ''; }\nlet stepAntes = '';\ntry { stepAntes = String(($('Get Session').first().json || {}).step || ''); } catch (e) { stepAntes = ''; }\nif (stepAntes === 'awaiting_password' || stepAntes === 'awaiting_second_factor') {\n  msgEntrada = '••••••';\n}\n\nreturn [{\n  json: {\n    phone: item.phone,\n    step: item.next_step,\n    data: JSON.stringify(merged),\n    reply_text: texto,\n    audit: item._audit ? JSON.stringify(item._audit) : null,\n    msg_in: msgEntrada,\n    msg_out: texto,\n    msg_contrato: (merged && merged.contrato != null) ? String(merged.contrato) : '',\n    // Envios extras (2a via): o PIX sozinho e o boleto em PDF, mandados depois\n    // da mensagem principal. Vazios nos demais fluxos -> nao enviam nada.\n    pix_code: item.pix_code || '',\n    boleto_url: item.boleto_url || '',\n  }\n}];"
       },
       "id": "code-persist",
       "name": "Preparar Persistencia",
@@ -1306,6 +1306,132 @@
       "position": [
         2850,
         0
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $('Preparar Persistencia').first().json.pix_code }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-pix",
+      "name": "Tem PIX?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        3050,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.EVOLUTION_API_URL }}/message/sendText/{{ $env.EVOLUTION_INSTANCE }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ number: $('Preparar Persistencia').first().json.phone, text: $('Preparar Persistencia').first().json.pix_code }) }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "={{ $env.EVOLUTION_API_KEY }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 20000
+        }
+      },
+      "id": "http-send-pix",
+      "name": "Evolution - Enviar PIX",
+      "type": "n8n-nodes-base.httpRequest",
+      "onError": "continueRegularOutput",
+      "alwaysOutputData": true,
+      "typeVersion": 4.2,
+      "position": [
+        3250,
+        -80
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $('Preparar Persistencia').first().json.boleto_url }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-boleto",
+      "name": "Tem boleto?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        3450,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.EVOLUTION_API_URL }}/message/sendMedia/{{ $env.EVOLUTION_INSTANCE }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ number: $('Preparar Persistencia').first().json.phone, mediatype: 'document', mimetype: 'application/pdf', fileName: 'Boleto.pdf', media: $('Preparar Persistencia').first().json.boleto_url }) }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "={{ $env.EVOLUTION_API_KEY }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 25000
+        }
+      },
+      "id": "http-send-boleto",
+      "name": "Evolution - Enviar Boleto",
+      "type": "n8n-nodes-base.httpRequest",
+      "onError": "continueRegularOutput",
+      "alwaysOutputData": true,
+      "typeVersion": 4.2,
+      "position": [
+        3650,
+        -80
       ]
     }
   ],
@@ -1892,6 +2018,58 @@
             "index": 0
           }
         ]
+      ]
+    },
+    "Evolution - Enviar Resposta": {
+      "main": [
+        [
+          {
+            "node": "Tem PIX?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tem PIX?": {
+      "main": [
+        [
+          {
+            "node": "Evolution - Enviar PIX",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Tem boleto?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Evolution - Enviar PIX": {
+      "main": [
+        [
+          {
+            "node": "Tem boleto?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tem boleto?": {
+      "main": [
+        [
+          {
+            "node": "Evolution - Enviar Boleto",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
       ]
     }
   },

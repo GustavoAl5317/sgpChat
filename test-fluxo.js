@@ -156,6 +156,7 @@ function turn(sessionRow, text, phone, sgpResponse, faturas, diag, espiar, acs, 
   const p = run('Preparar Persistencia', [r], {});
   return { reply: p.reply_text, step: p.step, sessionRow: { step: p.step, data: p.data },
            data: JSON.parse(p.data), audit: p.audit ? JSON.parse(p.audit) : null,
+           pix: p.pix_code || '', boleto: p.boleto_url || '',
            montado: montado };
 }
 
@@ -186,11 +187,13 @@ function _venc(deltaMeses, dia) {
   return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' +
          String(d.getDate()).padStart(2, '0');
 }
+// Valores distintos identificam cada fatura na resposta (a linha digitavel nao
+// e mais exibida - vai no PDF): 100=vencida, 200=mes atual, 300/400=futuras.
 const FATURAS_MIX = { status: 1, razaoSocial: 'MARIA', links: [
   { fatura: 1, vencimento: _venc(-1), valor: 100, linhadigitavel: 'VENCIDA' },
-  { fatura: 2, vencimento: _venc(0),  valor: 100, linhadigitavel: 'MESATUAL' },
-  { fatura: 3, vencimento: _venc(1),  valor: 100, linhadigitavel: 'FUTURA' },
-  { fatura: 4, vencimento: _venc(2),  valor: 100, linhadigitavel: 'FUTURA2' },
+  { fatura: 2, vencimento: _venc(0),  valor: 200, linhadigitavel: 'MESATUAL' },
+  { fatura: 3, vencimento: _venc(1),  valor: 300, linhadigitavel: 'FUTURA' },
+  { fatura: 4, vencimento: _venc(2),  valor: 400, linhadigitavel: 'FUTURA2' },
 ]};
 
 function ateIdentidade(opcaoMenu, phone, diag) {
@@ -320,12 +323,14 @@ check(!/CPF/i.test(t.reply || ''), 'identidade recente -> nao pede CPF de novo')
 check(/Vencimento/.test(t.reply || ''), 'identidade recente -> ja mostra as faturas');
 
 // Regra do provedor: vencida + mes atual entram; futuras NUNCA.
+// (valores: 100=vencida, 200=mes atual, 300/400=futuras)
 t = turn(sessaoValidada(60 * 1000), '2', PHONE_OK, null, FATURAS_MIX);
-check(/VENCIDA/.test(t.reply || ''), 'boleto: traz a fatura vencida');
-check(/MESATUAL/.test(t.reply || ''), 'boleto: traz a fatura do mes atual');
-check(!/FUTURA/.test(t.reply || ''), 'boleto: NAO traz faturas de meses a frente');
-check(/2\*? faturas|Você tem \*2\*/.test(t.reply || '') || (t.reply||'').match(/VENCIDA/) && (t.reply||'').match(/MESATUAL/),
-      'boleto: conta so as relevantes (2), nao as 4');
+check(/R\$ 100,00/.test(t.reply || ''), 'boleto: traz a fatura vencida (R$ 100)');
+check(/R\$ 200,00/.test(t.reply || ''), 'boleto: traz a fatura do mes atual (R$ 200)');
+check(!/R\$ 300,00/.test(t.reply || '') && !/R\$ 400,00/.test(t.reply || ''),
+      'boleto: NAO traz faturas de meses a frente');
+check((t.reply.match(/Vencimento/g) || []).length === 2,
+      'boleto: lista so as 2 relevantes (vencida + mes atual), nao as 4');
 
 t = turn(sessaoValidada(60 * 1000), '1', PHONE_OK);
 check(t.step === 'awaiting_wifi_what', 'identidade recente -> Wi-Fi vai direto ao que alterar');
@@ -371,7 +376,8 @@ console.log('\n=== Modulo 2: Financeiro (2a via) ===');
 console.log('  bot:', JSON.stringify(t.reply).slice(0, 150));
 check(t.step === 'menu', 'menu 2 + identidade -> mostra faturas e volta ao menu');
 check(/Vencimento/.test(t.reply), 'resposta traz vencimento');
-check(/23795/.test(t.reply), 'resposta traz a linha digitavel');
+check(!/23795/.test(t.reply) && !/`/.test(t.reply), 'linha digitavel NAO vai no texto (fica no PDF)');
+check(t.boleto && /boleto\//.test(t.boleto), 'boleto (PDF/link) enviado separado');
 check(/R\$ 9,91/.test(t.reply), 'valor formatado em BRL com juros');
 check(/05\/08\/2026/.test(t.reply), 'data convertida de ISO para DD/MM/AAAA');
 check(t.audit && t.audit.tipo === 'segunda_via', 'auditoria tipo=segunda_via');
@@ -645,8 +651,12 @@ const FATURAS_PIX = { status: 1, razaoSocial: 'X', links: [
     link: 'https://boleto/x' } ] };
 const tpix = turn({ step: 'menu', data: JSON.stringify({ contrato: 42, cpf: '12345678909', verified_at: Date.now() }) },
                   '2', PHONE_OK, null, FATURAS_PIX);
-check(/PIX copia e cola/i.test(tpix.reply) && /00020101PIXTESTE12345/.test(tpix.reply),
-      '2a via mostra o PIX copia-e-cola quando o SGP devolve codigopix');
+check(/Segue os dados do boleto/i.test(tpix.reply) && /Código PIX/i.test(tpix.reply),
+      '2a via: mensagem principal traz os dados + chama o PIX');
+check(tpix.pix === '00020101PIXTESTE12345',
+      'PIX copia-e-cola vai numa mensagem separada (botao copiar do WhatsApp)');
+check(tpix.boleto === 'https://boleto/x', 'boleto (PDF/link) enviado separado');
+check(!/`/.test(tpix.reply), 'PIX nao vai em bloco de codigo na mensagem principal');
 
 // Roda o diagnostico com uma resp de CPF especifica (nao a global do ateIdentidade)
 function diagDe(resp, diag) {
