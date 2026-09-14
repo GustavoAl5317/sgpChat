@@ -313,6 +313,15 @@ function confirmarWifi(ssid, senha, modo) {
 // cliente escolheu no menu. Centralizado aqui para os tres modulos usarem
 // exatamente a mesma validacao.
 function aposIdentidade(intent, s) {
+  // Suspenso (falta de pagamento): prioriza regularizar. So o financeiro segue
+  // direto (boleto/PIX); as outras opcoes viram o convite a pagar.
+  if (s.suspenso && intent !== 'financeiro') {
+    return { sgp_action: 'none', next_step: 'menu', sgp_payload: {},
+      reply_text: 'Sua internet está com o acesso *bloqueado/reduzido por falta ' +
+        'de pagamento*.\n\nPara *regularizar agora*, digite *2* — eu te mostro o ' +
+        '*PIX copia e cola* e o boleto. Assim que o pagamento é identificado, o ' +
+        'acesso normaliza automaticamente.\n\nOu digite *5* para falar com um atendente.' };
+  }
   if (intent === 'financeiro') {
     return { sgp_action: 'segunda_via', next_step: 'menu', reply_text: null,
              sgp_payload: { contrato: s.contrato } };
@@ -430,7 +439,7 @@ switch (stepEfetivo) {
     } else {
       const esc = opcoes[idx - 1];
       session_patch = { contrato: esc.contrato, valor_aberto: esc.valor_aberto || 0,
-                        contract_options: undefined };
+                        suspenso: !!esc.suspenso, contract_options: undefined };
       if (session.second_factor_pending) {
         reply_text = 'Para confirmar sua identidade, informe a data de nascimento do titular (DD/MM/AAAA):';
         next_step = 'awaiting_second_factor';
@@ -723,7 +732,20 @@ function confirmarWifi(ssid, senha, modo) {
 // Este node roda separado do Parse & Route e nao enxerga as constantes de la.
 const WIFI_NOME_ON = String($env.WIFI_PERMITE_NOME || 'true').trim().toLowerCase() !== 'false';
 
-function aposIdentidade(it, contrato, mac, ssidAtual, valorAberto) {
+// Aviso de regularizacao, reaproveitado onde o cliente esta suspenso.
+const MSG_REGULARIZAR =
+  'Sua internet está com o acesso *bloqueado/reduzido por falta de pagamento*.\n\n' +
+  'Para *regularizar agora*, digite *2* — eu te mostro o *PIX copia e cola* e o ' +
+  'boleto. Assim que o pagamento é identificado, o acesso normaliza ' +
+  'automaticamente (alguns minutos).\n\nOu digite *5* para falar com um atendente.';
+
+function aposIdentidade(it, contrato, mac, ssidAtual, valorAberto, suspenso) {
+  // Suspenso (falta de pagamento): a prioridade e regularizar. So o financeiro
+  // segue direto (boleto/PIX); qualquer outra opcao vira o convite a pagar.
+  if (suspenso && it !== 'financeiro') {
+    return { sgp_action: 'none', next_step: 'menu', sgp_payload: {},
+             reply_text: MSG_REGULARIZAR };
+  }
   if (it === 'financeiro') {
     return { sgp_action: 'segunda_via', next_step: 'menu', reply_text: null,
              sgp_payload: { contrato: contrato } };
@@ -749,31 +771,26 @@ function aposIdentidade(it, contrato, mac, ssidAtual, valorAberto) {
 
 // Resposta do SGP: { msg, contratos: [ ... ] }
 const contratos = Array.isArray(resp && resp.contratos) ? resp.contratos : [];
-// contratoStatus: 1=Ativo, 2=Inativo, 4=Suspenso
-const ativos = contratos.filter(function (c) { return c.contratoStatus === 1; });
+// contratoStatus: 1=Ativo, 2=Inativo, 4=Suspenso.
+// ATENDIVEIS = Ativo (1) e Suspenso (4). O suspenso quase sempre e falta de
+// pagamento (no TSMX ate a "velocidade reduzida" chega aqui como status 4) - o
+// cliente ainda precisa se identificar e, principalmente, PAGAR. Barrar aqui era
+// o "diz que nao esta ativo sendo que esta". Ativos vem antes dos suspensos
+// quando o cliente tem mais de um contrato.
+const ativos = contratos
+  .filter(function (c) { return c.contratoStatus === 1 || c.contratoStatus === 4; })
+  .sort(function (a, b) { return (a.contratoStatus === 4 ? 1 : 0) - (b.contratoStatus === 4 ? 1 : 0); });
 
 if (contratos.length === 0) {
   reply_text = 'Não encontrei nenhum contrato com esse CPF/CNPJ. Confira o número ou digite *5* para falar com um atendente.';
   next_step = 'menu';
 } else if (ativos.length === 0) {
-  // Sem contrato ativo. Se existir um SUSPENSO, o motivo mais comum e falta de
-  // pagamento (suspensao automatica por atraso). Em vez do generico "sem
-  // contrato ativo -> atendente", diz o que esta acontecendo e aponta o caminho
-  // de pagar. Nao mostra valores aqui (o boleto tem dado sensivel e passa pela
-  // confirmacao de identidade); so avisa do corte.
-  const suspenso = contratos.find(function (c) { return c.contratoStatus === 4; });
-  if (suspenso) {
-    reply_text = 'Localizei seu cadastro. ⚠️ Sua conexão está *suspensa por ' +
-      'falta de pagamento*.\n\nAssim que o pagamento é identificado, a conexão ' +
-      'volta automaticamente (pode levar alguns minutos).\n\n' +
-      'Digite *2* para ver o seu boleto e a 2ª via, ou *5* para falar com um atendente.';
-    next_step = 'menu';
-  } else {
-    reply_text = 'Localizei seu cadastro, mas não há contrato ativo no momento. Vou te transferir para um atendente.';
-    next_step = 'human_handoff';
-  }
+  // Nem ativo nem suspenso: so cancelado/inativo. Nao ha self-service - atendente.
+  reply_text = 'Localizei seu cadastro, mas não há contrato ativo no momento. Vou te transferir para um atendente.';
+  next_step = 'human_handoff';
 } else {
   const ref = ativos[0];
+  const refSuspenso = ref.contratoStatus === 4;
 
   // ---- Segundo fator: o numero do WhatsApp bate com algum telefone do cadastro? ----
   const telefones = [];
@@ -790,6 +807,8 @@ if (contratos.length === 0) {
   // pagamento" no diagnostico, quando a base mantem o contrato Ativo e bloqueia
   // no RADIUS/OLT (a suspensao formal, status 4, e tratada la em cima).
   session_patch.valor_aberto = parseFloat(ref.contratoValorAberto) || 0;
+  // Suspenso por falta de pagamento: o fluxo prioriza regularizar (ver boleto/PIX).
+  session_patch.suspenso = refSuspenso;
   // Usuario PPPoE: chave de juncao preferida com o GenieACS no modo
   // 'genieacs', porque e o unico campo que o SGP e o equipamento enxergam
   // com o mesmo valor. O MAC entra so como segundo candidato.
@@ -805,8 +824,10 @@ if (contratos.length === 0) {
     session_patch.contract_options = ativos.slice(0, 9).map(function (c) {
       return { contrato: c.contratoId,
                valor_aberto: parseFloat(c.contratoValorAberto) || 0,
+               suspenso: c.contratoStatus === 4,
                label: (c.servico_plano || c.planointernet || 'Plano') + ' - ' +
-                      (c.endereco_logradouro || '') + ' ' + (c.endereco_numero || '') };
+                      (c.endereco_logradouro || '') + ' ' + (c.endereco_numero || '') +
+                      (c.contratoStatus === 4 ? ' (em atraso)' : '') };
     });
   }
 
@@ -821,7 +842,8 @@ if (contratos.length === 0) {
       // outros modulos podem ser usados sem repetir CPF.
       session_patch.verified_at = Date.now();
       const d = aposIdentidade(intent, ref.contratoId, session_patch.mac,
-                               session_patch.wifi_ssid_atual, session_patch.valor_aberto);
+                               session_patch.wifi_ssid_atual, session_patch.valor_aberto,
+                               refSuspenso);
       reply_text = d.reply_text;
       next_step = d.next_step;
       sgp_action = d.sgp_action;
@@ -1421,7 +1443,10 @@ if (!links.length) {
     if (Number(f.juros || 0) > 0 || Number(f.multa || 0) > 0) {
       t += '  _(já com juros e multa)_';
     }
-    if (f.linhadigitavel) t += '\n*Linha digitável:*\n`' + f.linhadigitavel + '`';
+    // PIX copia-e-cola primeiro: e o jeito mais rapido de pagar e regularizar.
+    // O bot so ENTREGA o codigo - quem paga e o cliente, no banco/app dele.
+    if (f.codigopix) t += '\n\n*PIX copia e cola:*\n`' + f.codigopix + '`';
+    if (f.linhadigitavel) t += '\n\n*Linha digitável (boleto):*\n`' + f.linhadigitavel + '`';
     if (f.link) t += '\n' + f.link;
     return t;
   });
@@ -1431,6 +1456,8 @@ if (!links.length) {
       : (links.length === 1 ? 'Aqui está sua fatura em aberto:\n\n'
                             : 'Você tem *' + links.length + '* faturas em aberto:\n\n'))
     + blocos.join('\n\n---\n\n')
+    + '\n\n_Depois de pagar, o acesso normaliza automaticamente assim que o ' +
+      'pagamento é identificado (pode levar alguns minutos)._'
     + '\n\nDigite *menu* para voltar ao início.';
 
   if (links.length > 3) {

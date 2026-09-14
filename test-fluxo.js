@@ -592,10 +592,28 @@ check(ttx.audit.resposta_sgp.sinal_dbm === null, 'valor de Tx nao e usado como s
 const respSusp = { msg: '', contratos: [
   Object.assign({}, RESP.contratos.find(function (c) { return c.contratoStatus === 1; }),
                 { contratoStatus: 4, contratoStatusDisplay: 'Suspenso' }) ] };
-const tsusp = turn({ step: 'awaiting_cpf', data: '{}' }, CPF, PHONE_OK, respSusp);
-check(/suspensa por falta de pagamento/i.test(tsusp.reply), 'contrato suspenso -> avisa corte por falta de pagamento');
-check(tsusp.step !== 'human_handoff', 'contrato suspenso nao vai direto para o atendente');
-check(/\*2\*/.test(tsusp.reply), 'contrato suspenso -> aponta o boleto (opcao 2)');
+let tsusp = turn({ step: 'awaiting_cpf', data: JSON.stringify({ intent: 'wifi' }) }, CPF, PHONE_OK, respSusp);
+check(/falta de pagamento/i.test(tsusp.reply), 'contrato suspenso -> avisa falta de pagamento');
+check(tsusp.step !== 'human_handoff', 'contrato suspenso nao vai direto para o atendente (se identifica)');
+check(/\*2\*/.test(tsusp.reply), 'contrato suspenso -> aponta pagar/regularizar (opcao 2)');
+check(tsusp.data && tsusp.data.suspenso === true, 'sessao marca suspenso');
+check(tsusp.data && tsusp.data.verified_at, 'identidade fica validada (pode ir ao boleto sem repetir CPF)');
+
+// NAO pode dar loop: o suspenso digita 2 e CHEGA no boleto (antes o filtro so
+// status 1 devolvia "sem contrato ativo" de novo, num circulo).
+const tsuspBoleto = turn(tsusp.sessionRow, '2', PHONE_OK, respSusp, FATURAS);
+check(/Vencimento|fatura|PIX/i.test(tsuspBoleto.reply) && !/sem contrato|não há contrato/i.test(tsuspBoleto.reply),
+      'suspenso -> digitar 2 chega no boleto (sem loop de "sem contrato")');
+
+// PIX copia-e-cola na 2a via quando o TSMX devolve codigopix (#4 - pagar pelo bot)
+const FATURAS_PIX = { status: 1, razaoSocial: 'X', links: [
+  { fatura: 1, vencimento: _venc(-1), valor: 84.09, valor_original: 79.99,
+    codigopix: '00020101PIXTESTE12345', linhadigitavel: '34191.09008 04299',
+    link: 'https://boleto/x' } ] };
+const tpix = turn({ step: 'menu', data: JSON.stringify({ contrato: 42, cpf: '12345678909', verified_at: Date.now() }) },
+                  '2', PHONE_OK, null, FATURAS_PIX);
+check(/PIX copia e cola/i.test(tpix.reply) && /00020101PIXTESTE12345/.test(tpix.reply),
+      '2a via mostra o PIX copia-e-cola quando o SGP devolve codigopix');
 
 // Roda o diagnostico com uma resp de CPF especifica (nao a global do ateIdentidade)
 function diagDe(resp, diag) {
