@@ -802,15 +802,16 @@ function aposIdentidade(it, contrato, mac, ssidAtual, valorAberto, suspenso) {
 
 // Resposta do SGP: { msg, contratos: [ ... ] }
 const contratos = Array.isArray(resp && resp.contratos) ? resp.contratos : [];
-// contratoStatus: 1=Ativo, 2=Inativo, 4=Suspenso.
-// ATENDIVEIS = Ativo (1) e Suspenso (4). O suspenso quase sempre e falta de
-// pagamento (no TSMX ate a "velocidade reduzida" chega aqui como status 4) - o
-// cliente ainda precisa se identificar e, principalmente, PAGAR. Barrar aqui era
-// o "diz que nao esta ativo sendo que esta". Ativos vem antes dos suspensos
-// quando o cliente tem mais de um contrato.
+// contratoStatus (TSMX): 1=Ativo. Falta de pagamento tem MAIS de um codigo:
+// 4=Suspenso e 7="Ativo V. Reduzida" (throttle, ainda online) - ambos com valor
+// em aberto. ATENDIVEIS = Ativo + os de atraso: o cliente precisa se identificar
+// e PAGAR. Barrar aqui era o "diz que nao esta ativo sendo que esta". Ativo pleno
+// vem antes dos em atraso quando ha mais de um contrato.
+const STATUS_ATRASO = [4, 7];
+function ehAtraso(c) { return STATUS_ATRASO.indexOf(c.contratoStatus) >= 0; }
 const ativos = contratos
-  .filter(function (c) { return c.contratoStatus === 1 || c.contratoStatus === 4; })
-  .sort(function (a, b) { return (a.contratoStatus === 4 ? 1 : 0) - (b.contratoStatus === 4 ? 1 : 0); });
+  .filter(function (c) { return c.contratoStatus === 1 || ehAtraso(c); })
+  .sort(function (a, b) { return (a.contratoStatus === 1 ? 0 : 1) - (b.contratoStatus === 1 ? 0 : 1); });
 
 if (contratos.length === 0) {
   reply_text = 'Não encontrei nenhum contrato com esse CPF/CNPJ. Confira o número ou digite *5* para falar com um atendente.';
@@ -821,7 +822,7 @@ if (contratos.length === 0) {
   next_step = 'human_handoff';
 } else {
   const ref = ativos[0];
-  const refSuspenso = ref.contratoStatus === 4;
+  const refSuspenso = ehAtraso(ref);
 
   // ---- Segundo fator: o numero do WhatsApp bate com algum telefone do cadastro? ----
   const telefones = [];
@@ -855,10 +856,10 @@ if (contratos.length === 0) {
     session_patch.contract_options = ativos.slice(0, 9).map(function (c) {
       return { contrato: c.contratoId,
                valor_aberto: parseFloat(c.contratoValorAberto) || 0,
-               suspenso: c.contratoStatus === 4,
+               suspenso: ehAtraso(c),
                label: (c.servico_plano || c.planointernet || 'Plano') + ' - ' +
                       (c.endereco_logradouro || '') + ' ' + (c.endereco_numero || '') +
-                      (c.contratoStatus === 4 ? ' (em atraso)' : '') };
+                      (ehAtraso(c) ? ' (em atraso)' : '') };
     });
   }
 

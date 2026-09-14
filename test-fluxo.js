@@ -621,6 +621,17 @@ const tpromTem = turn(tsusp.sessionRow, '2', PHONE_OK,
 check(tpromTem.step !== 'human_handoff' && /já tem uma \*promessa|20\/09\/2026/i.test(tpromTem.reply),
       'promessa ja existente -> informa o cliente (nao vai ao atendente)');
 
+// Falta de pagamento tem 2 codigos no TSMX: 4 (Suspenso) e 7 (Ativo V. Reduzida).
+// Ambos precisam cair no regularizar - o 7 era o que ainda dava "sem contrato".
+[4, 7].forEach(function (st) {
+  const respAtraso = { msg: '', contratos: [
+    Object.assign({}, RESP.contratos.find(function (c) { return c.contratoStatus === 1; }),
+                  { contratoStatus: st }) ] };
+  const tt = turn({ step: 'awaiting_cpf', data: JSON.stringify({ intent: 'wifi' }) }, CPF, PHONE_OK, respAtraso);
+  check(tt.step === 'regularizar' && tt.data.suspenso === true,
+        'status ' + st + ' -> regularizar (identifica, nao "sem contrato ativo")');
+});
+
 // PIX copia-e-cola na 2a via quando o TSMX devolve codigopix (#4 - pagar pelo bot)
 const FATURAS_PIX = { status: 1, razaoSocial: 'X', links: [
   { fatura: 1, vencimento: _venc(-1), valor: 84.09, valor_original: 79.99,
