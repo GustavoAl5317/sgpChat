@@ -354,7 +354,12 @@ if (/^(menu|sair|voltar|inicio|0)$/i.test(text)) {
     session_patch: { reset: true }, sgp_action: 'none', sgp_payload: {} } }];
 }
 
-switch (step) {
+// Na fila do atendente (human_handoff) o cliente ainda pode resolver sozinho:
+// um numero de menu digitado ali e tratado como se ele estivesse no menu.
+let stepEfetivo = step;
+if (step === 'human_handoff' && /^[1-5]$/.test(text)) stepEfetivo = 'menu';
+
+switch (stepEfetivo) {
   case 'menu': {
     // Os numeros das outras opcoes nao mudam quando o Wi-Fi sai: cliente
     // costuma responder olhando uma mensagem antiga da conversa, e renumerar
@@ -384,7 +389,10 @@ switch (step) {
         session_patch = { attempts: 0, intent: it, ident_reaproveitada: undefined };
       }
     } else if (text === '5') {
-      reply_text = 'Certo! Vou te transferir para um atendente humano. Aguarde um momento.';
+      reply_text = 'Certo! Você entrou na fila de atendimento. 👍\n\n' +
+        'Um atendente vai te responder por aqui em instantes — pode deixar essa ' +
+        'conversa aberta.\n\nSe preferir resolver agora, digite *menu* para ver ' +
+        'as opções ou o número da opção direto.';
       next_step = 'human_handoff';
     } else {
       reply_text = MENU;
@@ -607,7 +615,11 @@ switch (step) {
   }
 
   case 'human_handoff': {
-    reply_text = 'Você está na fila de atendimento humano. Em breve alguém falará com você por aqui.\n\nDigite *menu* para voltar ao início.';
+    // Fila: o bot NAO fica mudo. Segue fazendo companhia ate um atendente
+    // assumir de fato (no painel). Enquanto isso, tranquiliza e oferece saida.
+    reply_text = '⏳ Você continua na fila — um atendente já vai te responder por ' +
+      'aqui, pode aguardar.\n\nSe preferir resolver agora, digite *menu* para ver ' +
+      'as opções (ou o número da opção direto).';
     next_step = 'human_handoff';
     break;
   }
@@ -1835,7 +1847,12 @@ nodes = [
                               "    DELETE FROM wa_sessions WHERE updated_at < now() - interval '30 minutes'\n"
                               ")\n"
                               "SELECT s.step, s.data,\n"
-                              "       COALESCE((SELECT ativo FROM wa_humano WHERE phone = $1), false) AS humano\n"
+                              # O bot so CALA quando um atendente assumiu de fato (atendente
+                              # preenchido no painel). Se o cliente so entrou na fila
+                              # (ativo=true, atendente NULL), o bot continua respondendo -
+                              # fazendo companhia ate alguem assumir.
+                              "       COALESCE((SELECT ativo AND atendente IS NOT NULL\n"
+                              "                   FROM wa_humano WHERE phone = $1), false) AS humano\n"
                               "FROM (\n"
                               "  SELECT step, data FROM wa_sessions\n"
                               "   WHERE phone = $1 AND updated_at >= now() - interval '30 minutes'\n"
@@ -2202,18 +2219,21 @@ nodes = [
      "onError": "continueRegularOutput", "alwaysOutputData": True,
      "typeVersion": 2.4, "position": [2650, 160], "credentials": PG_CRED},
 
-    # Quando o bot transfere para atendente (step vira human_handoff), liga o
-    # modo humano - a partir da proxima mensagem o bot cala e a pessoa assume.
-    # A query so age quando e handoff (SELECT ... WHERE); nos outros turnos e
-    # no-op. onError continua: se falhar, a resposta ja saiu.
+    # Fila de atendimento. Entra na fila quando o passo NOVO ($2) e human_handoff
+    # (ativo=true); SAI da fila quando o passo ANTERIOR ($3) era human_handoff mas
+    # o novo nao e - ou seja, o cliente escolheu outra opcao (ativo=false). Nao
+    # mexe em 'atendente': quem assume/devolve e o painel. Nos demais turnos a
+    # WHERE nao casa e e no-op. onError continua: a resposta ja saiu.
     {"parameters": {"operation": "executeQuery",
                     "query": ("INSERT INTO wa_humano (phone, ativo, atualizado_em)\n"
-                              "SELECT $1, true, now() WHERE $2 = 'human_handoff'\n"
+                              "SELECT $1, ($2 = 'human_handoff'), now()\n"
+                              "WHERE $2 = 'human_handoff' OR $3 = 'human_handoff'\n"
                               "ON CONFLICT (phone) DO UPDATE\n"
-                              "  SET ativo = true, atualizado_em = now();"),
+                              "  SET ativo = ($2 = 'human_handoff'), atualizado_em = now();"),
                     "options": {"queryReplacement":
                         "={{ [$('Preparar Persistencia').first().json.phone, "
-                        "$('Preparar Persistencia').first().json.step] }}"}},
+                        "$('Preparar Persistencia').first().json.step, "
+                        "$('Parse & Route').first().json.step] }}"}},
      "id": "pg-marcar-humano", "name": "Marcar Humano", "type": "n8n-nodes-base.postgres",
      "onError": "continueRegularOutput", "alwaysOutputData": True,
      "typeVersion": 2.4, "position": [2650, 280], "credentials": PG_CRED},

@@ -276,6 +276,24 @@ t = turn({ step: 'awaiting_wifi_confirm',
          { msg: 'O Servico de internet nao possui Gerenciador de CPE configurado.', success: false });
 check(t.step === 'human_handoff', 'roteador sem CPE -> atendente');
 
+// ---- Fila de atendimento: o bot NAO cala, faz companhia ate assumirem ----
+// Escolher 5 poe o cliente na fila; enquanto nenhum atendente assume (isso e no
+// painel, fora daqui), o bot segue respondendo e deixa escolher outra opcao.
+console.log('\n=== Fila de atendimento (opcao 5) ===');
+let q = turn({ step: 'menu', data: '{}' }, '5', PHONE_OK);
+check(q.step === 'human_handoff', 'opcao 5 -> entra na fila (human_handoff)');
+check(/fila/i.test(q.reply), 'opcao 5 -> avisa que entrou na fila (nao "vou calar")');
+
+q = turn({ step: 'human_handoff', data: '{}' }, 'oi', PHONE_OK);
+check(q.step === 'human_handoff' && /fila/i.test(q.reply),
+      'na fila, texto qualquer -> bot continua respondendo (aguarde), nao fica mudo');
+
+q = turn({ step: 'human_handoff', data: '{}' }, '2', PHONE_OK);
+check(q.step !== 'human_handoff', 'na fila, digitar 2 -> sai da fila e trata como opcao do menu');
+
+q = turn({ step: 'human_handoff', data: '{}' }, 'menu', PHONE_OK);
+check(q.step === 'menu', 'na fila, "menu" volta ao inicio');
+
 // ========================= MODULO 2: Financeiro =========================
 // ================= Identidade reaproveitada (janela de 15 min) =================
 // O cliente resolve duas coisas na mesma conversa. Repetir CPF + data de
