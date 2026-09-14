@@ -137,6 +137,11 @@ function turn(sessionRow, text, phone, sgpResponse, faturas, diag, espiar, acs, 
     const cx = corrida_acs(r, acs, espiar, olt); r = cx.r; montado = cx.montado;
   }
 
+  // Promessa de pagamento: consulta a lista (sgpResponse mocka a resposta).
+  if (r.sgp_action === 'promessa') {
+    r = run('Processar Promessa', [sgpResponse || []], { 'Parse & Route': r });
+  }
+
   // Diagnostico encadeia: buscar ONU -> detalhe -> info
   if (r.sgp_action === 'diagnostico' && diag) {
     const busca = run('Processar Busca ONU', [diag.lista], { 'Parse & Route': r });
@@ -594,16 +599,27 @@ const respSusp = { msg: '', contratos: [
                 { contratoStatus: 4, contratoStatusDisplay: 'Suspenso' }) ] };
 let tsusp = turn({ step: 'awaiting_cpf', data: JSON.stringify({ intent: 'wifi' }) }, CPF, PHONE_OK, respSusp);
 check(/falta de pagamento/i.test(tsusp.reply), 'contrato suspenso -> avisa falta de pagamento');
-check(tsusp.step !== 'human_handoff', 'contrato suspenso nao vai direto para o atendente (se identifica)');
-check(/\*2\*/.test(tsusp.reply), 'contrato suspenso -> aponta pagar/regularizar (opcao 2)');
+check(tsusp.step === 'regularizar', 'contrato suspenso -> submenu de regularizar (nao atendente)');
+check(/Pagar/i.test(tsusp.reply) && /Promessa/i.test(tsusp.reply), 'regularizar oferece pagar e promessa');
 check(tsusp.data && tsusp.data.suspenso === true, 'sessao marca suspenso');
-check(tsusp.data && tsusp.data.verified_at, 'identidade fica validada (pode ir ao boleto sem repetir CPF)');
+check(tsusp.data && tsusp.data.verified_at, 'identidade fica validada (pode pagar sem repetir CPF)');
 
-// NAO pode dar loop: o suspenso digita 2 e CHEGA no boleto (antes o filtro so
-// status 1 devolvia "sem contrato ativo" de novo, num circulo).
-const tsuspBoleto = turn(tsusp.sessionRow, '2', PHONE_OK, respSusp, FATURAS);
+// NAO pode dar loop: no submenu de regularizar, *1* CHEGA no boleto (antes o
+// filtro so status 1 devolvia "sem contrato ativo" de novo, num circulo).
+const tsuspBoleto = turn(tsusp.sessionRow, '1', PHONE_OK, respSusp, FATURAS);
 check(/Vencimento|fatura|PIX/i.test(tsuspBoleto.reply) && !/sem contrato|não há contrato/i.test(tsuspBoleto.reply),
-      'suspenso -> digitar 2 chega no boleto (sem loop de "sem contrato")');
+      'suspenso -> *1* (pagar) chega no boleto (sem loop de "sem contrato")');
+
+// Promessa de pagamento (#3): o bot nao cria (a API so lista).
+// (a) Sem promessa listada -> encaminha ao atendente.
+const tpromSem = turn(tsusp.sessionRow, '2', PHONE_OK, []);
+check(tpromSem.step === 'human_handoff' && /promessa de pagamento/i.test(tpromSem.reply),
+      'promessa sem nenhuma listada -> encaminha ao atendente');
+// (b) Ja existe promessa -> informa, nao manda pro atendente.
+const tpromTem = turn(tsusp.sessionRow, '2', PHONE_OK,
+  { promessas: [{ status: 'Ativa', data_promessa: '2026-09-20' }] });
+check(tpromTem.step !== 'human_handoff' && /já tem uma \*promessa|20\/09\/2026/i.test(tpromTem.reply),
+      'promessa ja existente -> informa o cliente (nao vai ao atendente)');
 
 // PIX copia-e-cola na 2a via quando o TSMX devolve codigopix (#4 - pagar pelo bot)
 const FATURAS_PIX = { status: 1, razaoSocial: 'X', links: [

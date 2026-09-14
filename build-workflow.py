@@ -309,18 +309,24 @@ function confirmarWifi(ssid, senha, modo) {
   return t + 'Digite *1* para confirmar ou *2* para cancelar.';
 }
 
+// Submenu de regularizacao (cliente suspenso por falta de pagamento).
+const MENU_REGULARIZAR =
+  'Sua internet está com o acesso *bloqueado/reduzido por falta de pagamento*.\n\n' +
+  'Como você quer resolver?\n\n' +
+  '*1* - Pagar agora (PIX ou boleto)\n' +
+  '*2* - Promessa de pagamento\n' +
+  '*3* - Falar com um atendente\n\n' +
+  '_Assim que o pagamento é identificado, o acesso normaliza automaticamente._';
+
 // Depois que a identidade e confirmada, para onde vai depende do que o
 // cliente escolheu no menu. Centralizado aqui para os tres modulos usarem
 // exatamente a mesma validacao.
 function aposIdentidade(intent, s) {
   // Suspenso (falta de pagamento): prioriza regularizar. So o financeiro segue
-  // direto (boleto/PIX); as outras opcoes viram o convite a pagar.
+  // direto (boleto/PIX); as outras opcoes caem no submenu de regularizar.
   if (s.suspenso && intent !== 'financeiro') {
-    return { sgp_action: 'none', next_step: 'menu', sgp_payload: {},
-      reply_text: 'Sua internet está com o acesso *bloqueado/reduzido por falta ' +
-        'de pagamento*.\n\nPara *regularizar agora*, digite *2* — eu te mostro o ' +
-        '*PIX copia e cola* e o boleto. Assim que o pagamento é identificado, o ' +
-        'acesso normaliza automaticamente.\n\nOu digite *5* para falar com um atendente.' };
+    return { sgp_action: 'none', next_step: 'regularizar', sgp_payload: {},
+             reply_text: MENU_REGULARIZAR };
   }
   if (intent === 'financeiro') {
     return { sgp_action: 'segunda_via', next_step: 'menu', reply_text: null,
@@ -623,6 +629,29 @@ switch (stepEfetivo) {
     break;
   }
 
+  case 'regularizar': {
+    // Submenu do cliente suspenso por falta de pagamento.
+    if (text === '1') {
+      // Pagar: cai no financeiro (2a via com PIX/boleto).
+      sgp_action = 'segunda_via'; next_step = 'menu';
+      sgp_payload = { contrato: session.contrato };
+    } else if (text === '2') {
+      // Promessa de pagamento: o bot nao CRIA (a API so lista). Consulta se ja
+      // existe uma; se sim informa, se nao encaminha ao atendente.
+      sgp_action = 'promessa'; next_step = 'menu';
+      sgp_payload = { contrato: session.contrato };
+    } else if (text === '3') {
+      reply_text = 'Certo! Você entrou na fila de atendimento. Um atendente vai ' +
+        'te responder por aqui em instantes.\n\nSe preferir, digite *1* para pagar ' +
+        'agora (PIX/boleto).';
+      next_step = 'human_handoff';
+    } else {
+      reply_text = MENU_REGULARIZAR;
+      next_step = 'regularizar';
+    }
+    break;
+  }
+
   case 'human_handoff': {
     // Fila: o bot NAO fica mudo. Segue fazendo companhia ate um atendente
     // assumir de fato (no painel). Enquanto isso, tranquiliza e oferece saida.
@@ -732,19 +761,21 @@ function confirmarWifi(ssid, senha, modo) {
 // Este node roda separado do Parse & Route e nao enxerga as constantes de la.
 const WIFI_NOME_ON = String($env.WIFI_PERMITE_NOME || 'true').trim().toLowerCase() !== 'false';
 
-// Aviso de regularizacao, reaproveitado onde o cliente esta suspenso.
-const MSG_REGULARIZAR =
+// Submenu de regularizacao, reaproveitado onde o cliente esta suspenso.
+const MENU_REGULARIZAR =
   'Sua internet está com o acesso *bloqueado/reduzido por falta de pagamento*.\n\n' +
-  'Para *regularizar agora*, digite *2* — eu te mostro o *PIX copia e cola* e o ' +
-  'boleto. Assim que o pagamento é identificado, o acesso normaliza ' +
-  'automaticamente (alguns minutos).\n\nOu digite *5* para falar com um atendente.';
+  'Como você quer resolver?\n\n' +
+  '*1* - Pagar agora (PIX ou boleto)\n' +
+  '*2* - Promessa de pagamento\n' +
+  '*3* - Falar com um atendente\n\n' +
+  '_Assim que o pagamento é identificado, o acesso normaliza automaticamente._';
 
 function aposIdentidade(it, contrato, mac, ssidAtual, valorAberto, suspenso) {
   // Suspenso (falta de pagamento): a prioridade e regularizar. So o financeiro
-  // segue direto (boleto/PIX); qualquer outra opcao vira o convite a pagar.
+  // segue direto (boleto/PIX); qualquer outra opcao cai no submenu de regularizar.
   if (suspenso && it !== 'financeiro') {
-    return { sgp_action: 'none', next_step: 'menu', sgp_payload: {},
-             reply_text: MSG_REGULARIZAR };
+    return { sgp_action: 'none', next_step: 'regularizar', sgp_payload: {},
+             reply_text: MENU_REGULARIZAR };
   }
   if (it === 'financeiro') {
     return { sgp_action: 'segunda_via', next_step: 'menu', reply_text: null,
@@ -1535,6 +1566,71 @@ return [{ json: Object.assign({}, prev, {
 }) }];
 """
 
+# ---------------------------------------------------------------- Promessa
+# O bot NAO cria promessa (a API URA so tem promessapagamento/list). Aqui ele
+# CONSULTA: se ja existe uma promessa ativa, informa o cliente; se nao, encaminha
+# ao atendente para registrar. Foi a regra pedida pelo provedor.
+JS_PROC_PROMESSA = r"""
+const prev = $('Parse & Route').first().json;
+const resp = $input.first().json;
+
+// O formato da lista varia entre versoes - aceita as formas comuns.
+let lista = [];
+if (Array.isArray(resp)) lista = resp;
+else if (resp && Array.isArray(resp.promessas)) lista = resp.promessas;
+else if (resp && Array.isArray(resp.list)) lista = resp.list;
+else if (resp && Array.isArray(resp.results)) lista = resp.results;
+else if (resp && Array.isArray(resp.data)) lista = resp.data;
+
+// So conta promessa que ainda vale. Sem status legivel, considera que vale
+// (melhor informar do que mandar pro atendente duplicar uma que ja existe).
+function ativa(p) {
+  const st = String((p && (p.status || p.situacao || p.estado)) || '').toLowerCase();
+  if (!st) return true;
+  return !/cancel|quebrad|expir|venc|conclu|paga|quit|finaliz|inativ/.test(st);
+}
+const ativas = lista.filter(ativa);
+
+function dataBR(v) {
+  const m = String(v || '').match(/(\d{4})-(\d{2})-(\d{2})/);
+  return m ? (m[3] + '/' + m[2] + '/' + m[1]) : String(v || '');
+}
+
+let reply_text, next_step;
+if (ativas.length > 0) {
+  const p = ativas[0];
+  const prazo = p.data_promessa || p.datapromessa || p.data || p.vencimento || p.prazo || '';
+  reply_text = 'Você já tem uma *promessa de pagamento* registrada' +
+    (prazo ? ' (prazo até *' + dataBR(prazo) + '*)' : '') + '.\n\n' +
+    'Seu acesso deve seguir liberado até o prazo. Se ainda estiver sem internet, ' +
+    'reinicie o roteador (tira da tomada, espera 30s e liga).\n\n' +
+    'Para quitar agora, digite *1*. Digite *menu* para voltar.';
+  next_step = 'regularizar';
+} else {
+  // Sem promessa ativa: o bot nao registra - encaminha ao atendente (fila).
+  reply_text = 'Para registrar uma *promessa de pagamento* e liberar seu acesso, ' +
+    'vou te encaminhar para um atendente.\n\nSe preferir já quitar, digite *1* para ' +
+    'pagar por PIX ou boleto.';
+  next_step = 'human_handoff';
+}
+
+return [{ json: Object.assign({}, prev, {
+  reply_text: reply_text,
+  next_step: next_step,
+  // Nao reseta: o cliente pode digitar 1 em seguida para pagar sem repetir CPF.
+  session_patch: Object.assign({}, prev.session_patch),
+  _audit: {
+    tipo: 'promessa',
+    phone: prev.phone,
+    cpf: prev.session.cpf,
+    contrato: prev.sgp_payload.contrato,
+    ssid_novo: null,
+    sucesso: true,
+    resposta_sgp: { promessas: lista.length, ativas: ativas.length },
+  },
+}) }];
+"""
+
 # ---------------------------------------------------------------- Diagnostico
 JS_PROC_BUSCA_ONU = r"""
 const prev = $('Parse & Route').first().json;
@@ -1942,6 +2038,8 @@ nodes = [
         # resposta. So funcionava quando pedia CPF na hora (outro switch).
         {"conditions": cond("={{ $json.sgp_action }}", "diagnostico"),
          "renameOutput": True, "outputKey": "diagnostico"},
+        {"conditions": cond("={{ $json.sgp_action }}", "promessa"),
+         "renameOutput": True, "outputKey": "promessa"},
     ]}, "options": {"fallbackOutput": "extra", "renameFallbackOutput": "sem_chamada"}},
      "id": "switch-action", "name": "Precisa chamar o SGP?",
      "type": "n8n-nodes-base.switch", "typeVersion": 3.2, "position": [800, 0]},
@@ -2124,6 +2222,20 @@ nodes = [
 
     code_node("code-proc-fatura", "Processar Segunda Via", JS_PROC_FATURA, [1800, -200]),
 
+    # ---- Regularizar: promessa de pagamento (so consulta; nao cria) ----
+    # A API URA tem promessapagamento/list. Manda contrato+auth; neverError para
+    # que uma resposta ruim vire "sem promessa" -> atendente, nunca um erro cru.
+    {"parameters": {
+        "method": "POST", "url": "={{ $env.SGP_API_URL }}/api/ura/promessapagamento/list",
+        "sendBody": True, "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ app: $env.SGP_APP_NAME, token: $env.SGP_API_TOKEN, contrato: $json.sgp_payload.contrato }) }}",
+        "options": {"response": {"response": {"neverError": True}}, "timeout": 20000}},
+     "alwaysOutputData": True,
+     "id": "http-promessa", "name": "SGP - Promessas",
+     "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2, "position": [1600, -60]},
+
+    code_node("code-proc-promessa", "Processar Promessa", JS_PROC_PROMESSA, [1800, -60]),
+
     # ---- Modulo 3: Suporte (abrir chamado) ----
     {"parameters": {
         "method": "POST", "url": "={{ $env.SGP_API_URL }}/api/ura/chamado/",
@@ -2300,6 +2412,7 @@ connections = {
         to("SGP - Abrir Chamado"),       # abrir_chamado
         to("SGP - Segunda Via"),         # segunda_via
         to("SGP - Buscar ONU"),          # diagnostico (identidade ja validada)
+        to("SGP - Promessas"),           # promessa (regularizar)
         to(PERSIST),                     # fallback: so responder
     ]},
     "SGP - Consultar Cliente": {"main": [to("Processar Consulta CPF")]},
@@ -2320,6 +2433,8 @@ connections = {
     "Processar Diagnostico": {"main": [to(PERSIST)]},
     "ONU Nao Encontrada": {"main": [to(PERSIST)]},
     "SGP - Segunda Via": {"main": [to("Processar Segunda Via")]},
+    "SGP - Promessas": {"main": [to("Processar Promessa")]},
+    "Processar Promessa": {"main": [to(PERSIST)]},
     "Processar Segunda Via": {"main": [to(PERSIST)]},
     "SGP - Definir Wifi": {"main": [to("Processar Definir Wifi")]},
     "GenieACS - Buscar Device": {"main": [to("Montar Tarefa Wifi")]},
