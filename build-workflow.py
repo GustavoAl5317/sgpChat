@@ -148,7 +148,7 @@ const MENU = 'Olá! Sou o atendimento automático.\n\n' +
 // A janela e curta de proposito: o vinculo que estamos reaproveitando e
 // "este numero de WhatsApp provou ser o dono deste contrato", e ele deixa de
 // valer se o aparelho trocar de maos.
-const IDENT_TTL_MS = 15 * 60 * 1000;
+const IDENT_TTL_MS = 8 * 60 * 60 * 1000;  // 8h: cliente resolve varias coisas ao longo do dia sem repetir CPF
 function identidadeFresca(s) {
   if (!s || !s.contrato || !s.verified_at) return false;
   const idade = Date.now() - Number(s.verified_at);
@@ -446,47 +446,16 @@ switch (stepEfetivo) {
       const esc = opcoes[idx - 1];
       session_patch = { contrato: esc.contrato, valor_aberto: esc.valor_aberto || 0,
                         suspenso: !!esc.suspenso, contract_options: undefined };
-      if (session.second_factor_pending) {
-        reply_text = 'Para confirmar sua identidade, informe a data de nascimento do titular (DD/MM/AAAA):';
-        next_step = 'awaiting_second_factor';
-        session_patch.attempts = 0;
-      } else {
-        // O contrato escolhido ainda nao esta em session (o upsert vem depois),
-        // entao decide sobre a sessao ja com o patch aplicado.
-        const s = Object.assign({}, session, session_patch);
-        const d = aposIdentidade(session.intent, s);
-        reply_text = d.reply_text;
-        next_step = d.next_step;
-        sgp_action = d.sgp_action;
-        sgp_payload = d.sgp_payload;
-        session_patch.verified_at = Date.now();
-      }
-    }
-    break;
-  }
-
-  case 'awaiting_second_factor': {
-    const alvo = normDate(session.second_factor_target);
-    const resp = normDate(text);
-    if (alvo && resp && alvo === resp) {
-      const d = aposIdentidade(session.intent, session);
+      // Sem 2o fator: escolhido o contrato, a identidade ja vale (so CPF).
+      // O contrato escolhido ainda nao esta em session (o upsert vem depois),
+      // entao decide sobre a sessao ja com o patch aplicado.
+      const s = Object.assign({}, session, session_patch);
+      const d = aposIdentidade(session.intent, s);
       reply_text = d.reply_text;
       next_step = d.next_step;
       sgp_action = d.sgp_action;
       sgp_payload = d.sgp_payload;
-      session_patch = { attempts: 0, second_factor_target: undefined,
-                        second_factor_pending: undefined, verified_at: Date.now() };
-    } else {
-      const n = attempts + 1;
-      if (n >= 3) {
-        reply_text = 'Não consegui confirmar sua identidade. Vou te transferir para um atendente humano.';
-        next_step = 'human_handoff';
-        session_patch = { attempts: 0, second_factor_target: undefined };
-      } else {
-        reply_text = 'Data não confere. Envie no formato DD/MM/AAAA (tentativa ' + n + '/3):';
-        next_step = 'awaiting_second_factor';
-        session_patch = { attempts: n };
-      }
+      session_patch.verified_at = Date.now();
     }
     break;
   }
@@ -868,42 +837,24 @@ if (contratos.length === 0) {
       session_patch.contract_options.map(function (o, i) { return '*' + (i + 1) + '* - ' + o.label; }).join('\n');
   };
 
-  if (telefoneBate) {
-    if (ativos.length === 1) {
-      // Identidade confirmada pelo proprio numero: marca a janela em que os
-      // outros modulos podem ser usados sem repetir CPF.
-      session_patch.verified_at = Date.now();
-      const d = aposIdentidade(intent, ref.contratoId, session_patch.mac,
-                               session_patch.wifi_ssid_atual, session_patch.valor_aberto,
-                               refSuspenso);
-      reply_text = d.reply_text;
-      next_step = d.next_step;
-      sgp_action = d.sgp_action;
-      sgp_payload = d.sgp_payload;
-      if (d.reply_text && intent === 'wifi') {
-        reply_text = 'Confirmado' + (ref.razaoSocial ? ', ' + ref.razaoSocial : '') + '! ' + d.reply_text;
-      }
-    } else {
-      reply_text = listaContratos();
-      next_step = 'awaiting_contract_choice';
+  // Identidade so por CPF/CNPJ: o provedor optou por NAO pedir data de
+  // nascimento. Localizado o CPF, marca a janela (verified_at) em que os
+  // modulos rodam sem repetir o documento.
+  if (ativos.length === 1) {
+    session_patch.verified_at = Date.now();
+    const d = aposIdentidade(intent, ref.contratoId, session_patch.mac,
+                             session_patch.wifi_ssid_atual, session_patch.valor_aberto,
+                             refSuspenso);
+    reply_text = d.reply_text;
+    next_step = d.next_step;
+    sgp_action = d.sgp_action;
+    sgp_payload = d.sgp_payload;
+    if (d.reply_text && intent === 'wifi') {
+      reply_text = 'Confirmado' + (ref.razaoSocial ? ', ' + ref.razaoSocial : '') + '! ' + d.reply_text;
     }
   } else {
-    // Numero nao cadastrado -> exige data de nascimento
-    const nasc = ref.dataNascimento || '';
-    if (!nasc) {
-      reply_text = 'Não consegui confirmar sua identidade automaticamente. Vou te transferir para um atendente.';
-      next_step = 'human_handoff';
-    } else if (ativos.length === 1) {
-      session_patch.second_factor_target = nasc;
-      session_patch.attempts = 0;
-      reply_text = 'Esse número não é o cadastrado no contrato. Para confirmar que é você, informe a data de nascimento do titular (DD/MM/AAAA):';
-      next_step = 'awaiting_second_factor';
-    } else {
-      session_patch.second_factor_target = nasc;
-      session_patch.second_factor_pending = true;
-      reply_text = listaContratos();
-      next_step = 'awaiting_contract_choice';
-    }
+    reply_text = listaContratos();
+    next_step = 'awaiting_contract_choice';
   }
 }
 
@@ -1963,12 +1914,13 @@ nodes = [
 
     # A sessao guarda CPF, contrato e o verified_at que dispensa revalidacao.
     # Expirar isso nao pode depender de um cron que alguem lembrou de agendar:
-    # a propria consulta ignora o que passou de 30 min e apaga as sessoes
-    # abandonadas de todo mundo no mesmo golpe. A janela de identidade e de 15
-    # min, entao 30 aqui nunca corta um atendimento que ainda valeria.
+    # a propria consulta ignora o que passou de 8h e apaga as sessoes
+    # abandonadas de todo mundo no mesmo golpe. A janela de identidade e de 8h
+    # (o cliente resolve varias coisas ao longo do dia), entao a expiracao aqui
+    # acompanha - nunca corta um atendimento que ainda valeria.
     {"parameters": {"operation": "executeQuery",
                     "query": ("WITH expiradas AS (\n"
-                              "    DELETE FROM wa_sessions WHERE updated_at < now() - interval '30 minutes'\n"
+                              "    DELETE FROM wa_sessions WHERE updated_at < now() - interval '8 hours'\n"
                               ")\n"
                               "SELECT s.step, s.data,\n"
                               # O bot so CALA quando um atendente assumiu de fato (atendente
@@ -1979,11 +1931,11 @@ nodes = [
                               "                   FROM wa_humano WHERE phone = $1), false) AS humano\n"
                               "FROM (\n"
                               "  SELECT step, data FROM wa_sessions\n"
-                              "   WHERE phone = $1 AND updated_at >= now() - interval '30 minutes'\n"
+                              "   WHERE phone = $1 AND updated_at >= now() - interval '8 hours'\n"
                               "  UNION ALL\n"
                               "  SELECT NULL, NULL WHERE NOT EXISTS (\n"
                               "      SELECT 1 FROM wa_sessions\n"
-                              "       WHERE phone = $1 AND updated_at >= now() - interval '30 minutes')\n"
+                              "       WHERE phone = $1 AND updated_at >= now() - interval '8 hours')\n"
                               ") s"),
                     "options": {"queryReplacement": "={{ [$json.phone] }}"}},
      "id": "pg-get", "name": "Get Session", "type": "n8n-nodes-base.postgres",

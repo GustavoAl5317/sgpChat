@@ -331,9 +331,11 @@ t = turn(sessaoValidada(60 * 1000), '1', PHONE_OK);
 check(t.step === 'awaiting_wifi_what', 'identidade recente -> Wi-Fi vai direto ao que alterar');
 check(t.data.ident_reaproveitada === true, 'auditoria sabe que a identidade foi reaproveitada');
 
-// Passados os 15 min, revalida do zero.
-t = turn(sessaoValidada(16 * 60 * 1000), '2', PHONE_OK, null, FATURAS);
-check(t.step === 'awaiting_cpf', 'identidade expirada -> pede CPF de novo');
+// Janela de 8h: dentro dela nao repete CPF; passou, revalida do zero.
+t = turn(sessaoValidada(2 * 60 * 60 * 1000), '2', PHONE_OK, null, FATURAS);
+check(t.step !== 'awaiting_cpf', 'identidade de 2h atras ainda vale (janela de 8h)');
+t = turn(sessaoValidada(9 * 60 * 60 * 1000), '2', PHONE_OK, null, FATURAS);
+check(t.step === 'awaiting_cpf', 'identidade de 9h atras expirou -> pede CPF de novo');
 
 // Sessao sem verified_at (versao antiga do fluxo, ou nunca validada).
 t = turn({ step: 'menu', data: JSON.stringify({ contrato: 566 }) }, '2', PHONE_OK, null, FATURAS);
@@ -404,30 +406,33 @@ t = turn({ step: 'awaiting_support_desc', data: JSON.stringify({ contrato: 566 }
          'Descricao suficientemente longa aqui', PHONE_OK, { status: 0, msg: 'erro qualquer' });
 check(t.step === 'human_handoff', 'falha ao abrir chamado -> atendente');
 
-// ======================= Seguranca (todos os modulos) =======================
-console.log('\n=== Seguranca ===');
-for (const [opt, nome] of [['1', 'wifi'], ['2', 'financeiro'], ['3', 'suporte']]) {
+// ======================= Identidade so por CPF =======================
+// O provedor optou por NAO pedir data de nascimento: localizado o CPF, o cliente
+// segue direto para o modulo escolhido, mesmo de um numero fora do cadastro.
+console.log('\n=== Identidade so por CPF (sem 2FA) ===');
+for (const [opt, nome, passo] of [['1', 'wifi', 'awaiting_wifi_what'],
+                                   ['2', 'financeiro', 'menu'],
+                                   ['3', 'suporte', 'awaiting_support_desc']]) {
   let ss = null;
   let tt = turn(ss, opt, PHONE_OUTRO); ss = tt.sessionRow;
   tt = turn(ss, CPF, PHONE_OUTRO, RESP, FATURAS); ss = tt.sessionRow;
   if (tt.step === 'awaiting_contract_choice') { tt = turn(ss, '1', PHONE_OUTRO, RESP, FATURAS); ss = tt.sessionRow; }
-  check(tt.step === 'awaiting_second_factor', 'modulo ' + nome + ': telefone desconhecido exige 2FA');
+  check(tt.step !== 'awaiting_second_factor' && tt.step !== 'awaiting_cpf',
+        'modulo ' + nome + ': so CPF identifica (sem pedir data de nascimento)');
 }
 
+// CPF invalido 3x ainda vai para o atendente (isso continua).
 let s3 = null;
 t = turn(s3, '1', PHONE_OUTRO); s3 = t.sessionRow;
 for (let i = 0; i < 3; i++) { t = turn(s3, '11111111111', PHONE_OUTRO); s3 = t.sessionRow; }
 check(t.step === 'human_handoff', '3 CPFs invalidos -> atendente');
 
-s3 = { step: 'awaiting_second_factor', data: JSON.stringify({ attempts: 0, second_factor_target: '1990-05-20', intent: 'financeiro' }) };
-for (let i = 0; i < 3; i++) { t = turn(s3, '01/01/1900', PHONE_OUTRO); s3 = t.sessionRow; }
-check(t.step === 'human_handoff', '3 erros de 2FA -> atendente');
-
-// 2FA correto libera o modulo escolhido, nao sempre o de wifi
-t = turn({ step: 'awaiting_second_factor',
-           data: JSON.stringify({ attempts: 0, second_factor_target: '1990-05-20', intent: 'suporte', contrato: 83 }) },
-         '20/05/1990', PHONE_OUTRO);
-check(t.step === 'awaiting_support_desc', '2FA ok respeita o modulo escolhido (suporte)');
+// So CPF, de numero fora do cadastro, ja libera o modulo escolhido.
+let scpf = null;
+t = turn(scpf, '3', PHONE_OUTRO); scpf = t.sessionRow;
+t = turn(scpf, CPF, PHONE_OUTRO, RESP, FATURAS); scpf = t.sessionRow;
+if (t.step === 'awaiting_contract_choice') { t = turn(scpf, '1', PHONE_OUTRO, RESP, FATURAS); scpf = t.sessionRow; }
+check(t.step === 'awaiting_support_desc', 'so CPF respeita o modulo escolhido (suporte)');
 
 t = turn({ step: 'awaiting_cpf', data: '{}' }, CPF, PHONE_OK, { msg: 'x', contratos: [] });
 check(t.step === 'menu', 'CPF sem contrato -> volta ao menu');
@@ -533,13 +538,14 @@ const tabs = ateIdentidade('4', PHONE_OK, { lista: ONU_LISTA, detalhe: ONU_DETAL
   info: { result: 'uptime 12345 dias  temperatura 47 C  serial 9988' } }).t;
 check(!/Sinal óptico/.test(tabs.reply), 'numeros sem dBm nao viram leitura de sinal');
 
-// Diagnostico passa pela mesma validacao dos outros modulos
+// Diagnostico identifica so por CPF, como os demais (sem 2FA)
 const diagOk = { lista: ONU_LISTA, detalhe: ONU_DETALHE, info: OLTS.huawei };
 let sd = null;
 let tq = turn(sd, '4', PHONE_OUTRO); sd = tq.sessionRow;
 tq = turn(sd, CPF, PHONE_OUTRO, RESP, FATURAS, diagOk); sd = tq.sessionRow;
 if (tq.step === 'awaiting_contract_choice') tq = turn(sd, '1', PHONE_OUTRO, RESP, FATURAS, diagOk);
-check(tq.step === 'awaiting_second_factor', 'diagnostico exige 2FA como os demais');
+check(tq.step !== 'awaiting_second_factor' && tq.step !== 'awaiting_cpf',
+      'diagnostico identifica so por CPF (sem data de nascimento)');
 
 // --- Caminho preferencial: info_rx vem pronto no /fttx/onu/list/ -----------
 // Estrutura real capturada do SGP do provedor. Aqui nao ha texto de OLT para
