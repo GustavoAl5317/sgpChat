@@ -1488,8 +1488,6 @@ if (!links.length) {
   boleto_url = f0.link || '';
 }
 
-const session_patch = Object.assign({}, prev.session_patch, { reset: true });
-
 // cpf/contrato para a auditoria variam com o caminho:
 //  - identidade reaproveitada: ja vem na sessao/sgp_payload do Parse & Route.
 //  - CPF digitado nesta rodada: o cpf esta no session_patch do Parse & Route (a
@@ -1500,14 +1498,25 @@ let auditCpf = (prev.session_patch && prev.session_patch.cpf) ||
                (prev.session && prev.session.cpf) ||
                (prev.sgp_payload && prev.sgp_payload.cpf) || '';
 let auditContrato = (prev.sgp_payload && prev.sgp_payload.contrato) || '';
-try {
-  const cc = $('Processar Consulta CPF').first().json;
-  if (cc) {
-    if (!auditContrato) auditContrato = (cc.sgp_payload && cc.sgp_payload.contrato) ||
-                                        (cc.session_patch && cc.session_patch.contrato) || '';
-    if (!auditCpf) auditCpf = (cc.session_patch && cc.session_patch.cpf) || '';
-  }
-} catch (e) {}
+let ccPatch = null;
+try { ccPatch = $('Processar Consulta CPF').first().json.session_patch || null; } catch (e) {}
+if (!auditContrato) auditContrato = (ccPatch && ccPatch.contrato) || '';
+if (!auditCpf) auditCpf = (ccPatch && ccPatch.cpf) || '';
+
+// Mantem a identidade por 8h: soft_reset limpa os dados da etapa mas preserva
+// estes campos, para o cliente NAO repetir o CPF na proxima opcao. Vem da
+// sessao reaproveitada ou do "Processar Consulta CPF" (CPF digitado agora).
+const ident = { cpf: auditCpf || undefined, contrato: auditContrato || undefined };
+function _keepIdent(o) {
+  if (!o) return;
+  ['verified_at', 'nome', 'mac', 'login', 'wifi_ssid_atual', 'suspenso', 'valor_aberto'].forEach(function (k) {
+    if (o[k] !== undefined && ident[k] === undefined) ident[k] = o[k];
+  });
+}
+_keepIdent(prev.session);
+_keepIdent(prev.session_patch);
+_keepIdent(ccPatch);
+const session_patch = Object.assign({}, ident, { soft_reset: true });
 
 return [{ json: Object.assign({}, prev, {
   reply_text: reply_text,
@@ -1865,8 +1874,6 @@ if (valorAberto > 0 && !(cls && cls.nivel === 'bom')) {
 }
 reply_text += '\n\nDigite *menu* para voltar ao início.';
 
-const session_patch = Object.assign({}, prev.session_patch, { reset: true });
-
 // cpf/contrato para a auditoria (mesmo cuidado da 2a via): no CPF digitado
 // agora, o cpf esta no session_patch e o contrato foi resolvido no
 // "Processar Consulta CPF" - prev.session.cpf aqui seria NULL e quebraria o
@@ -1889,6 +1896,21 @@ try {
     if (!auditCpf) auditCpf = (cc.session_patch && cc.session_patch.cpf) || '';
   }
 } catch (e) {}
+
+// Mantem a identidade por 8h (nao repete CPF na proxima opcao): soft_reset
+// limpa os dados da etapa mas preserva estes campos.
+let ccPatch = null, prPatch = null, prSession = null;
+try { const cc2 = $('Processar Consulta CPF').first().json; ccPatch = (cc2 && cc2.session_patch) || null; } catch (e) {}
+try { const pr = $('Parse & Route').first().json; prPatch = (pr && pr.session_patch) || null; prSession = (pr && pr.session) || null; } catch (e) {}
+const ident = { cpf: auditCpf || undefined, contrato: auditContrato || undefined };
+function _keepIdent(o) {
+  if (!o) return;
+  ['verified_at', 'nome', 'mac', 'login', 'wifi_ssid_atual', 'suspenso', 'valor_aberto'].forEach(function (k) {
+    if (o[k] !== undefined && ident[k] === undefined) ident[k] = o[k];
+  });
+}
+_keepIdent(prev.session); _keepIdent(prev.session_patch); _keepIdent(prSession); _keepIdent(ccPatch); _keepIdent(prPatch);
+const session_patch = Object.assign({}, ident, { soft_reset: true });
 
 return [{ json: Object.assign({}, prev, {
   reply_text: reply_text,
@@ -1924,9 +1946,29 @@ return [{ json: Object.assign({}, prev, {
 JS_PERSIST = r"""
 const item = $input.first().json;
 const patch = item.session_patch || {};
-// patch.reset limpa a sessao inteira (fim de atendimento ou cliente digitou "menu")
-const merged = patch.reset ? {} : Object.assign({}, item.session || {}, patch);
+// Tres modos de fechar a sessao:
+//  - reset: limpa TUDO (cliente digitou "menu"/"sair" - fim explicito).
+//  - soft_reset: fim de uma opcao (2a via, diagnostico). Limpa os dados da etapa
+//    mas PRESERVA a identidade por 8h, para o cliente nao repetir o CPF na
+//    proxima opcao (ver IDENT_KEEP).
+//  - nenhum: segue no meio de um fluxo, mantem tudo.
+const IDENT_KEEP = ['cpf', 'contrato', 'verified_at', 'nome', 'mac', 'login',
+                    'wifi_ssid_atual', 'suspenso', 'valor_aberto'];
+let merged;
+if (patch.reset) {
+  merged = {};
+} else {
+  merged = Object.assign({}, item.session || {}, patch);
+  if (patch.soft_reset) {
+    const keep = {};
+    IDENT_KEEP.forEach(function (k) {
+      if (merged[k] !== undefined && merged[k] !== null && merged[k] !== '') keep[k] = merged[k];
+    });
+    merged = keep;
+  }
+}
 delete merged.reset;
+delete merged.soft_reset;
 Object.keys(merged).forEach(function (k) { if (merged[k] === undefined) delete merged[k]; });
 
 // Chegar aqui sem texto e bug: todo caminho deveria ter montado uma resposta.
@@ -2002,6 +2044,34 @@ if (/Sou o atendimento autom/i.test(_t) && /2ª via de boleto/i.test(_t)) {
   reply_body = { number: item.phone, title: 'Confirmação', description: _t,
     footer: 'Atendimento automático',
     buttons: [_btn('1', 'Confirmar'), _btn('2', 'Cancelar')] };
+}
+
+// Telas de RESULTADO que instruem "digite X" (diagnostico, sem fatura, erros):
+// vira botao, para o cliente TOCAR em vez de digitar. Detecta as acoes citadas,
+// monta ate 3 botoes (id = numero da opcao) e tira o "digite ..." do corpo.
+// So age em mensagem de texto simples - nao mexe nos menus/submenus acima nem
+// nas telas de digitacao (CPF, senha), que nao citam "digite <opcao>".
+if (reply_endpoint === 'sendText') {
+  const acts = [];
+  const add = function (id, txt) {
+    if (acts.length < 3 && !acts.some(function (b) { return b.id === id; })) acts.push(_btn(id, txt));
+  };
+  if (/digite \*?2\*?|ver o( seu)? boleto/i.test(_t)) add('2', 'Ver boleto');
+  if (/digite \*?3\*?|abrir (um )?chamado/i.test(_t)) add('3', 'Abrir chamado');
+  if (/digite \*?5\*?|falar com (um )?atendente|transferir para um atendente/i.test(_t)) add('5', 'Atendente');
+  if (/digite \*?menu\*?|voltar ao in[íi]cio/i.test(_t)) add('0', 'Voltar ao menu');
+  if (acts.length) {
+    const corpo = _t
+      .replace(/\s*Se n[aã]o resolver,?\s*digite \*?3\*? para abrir (um )?chamado\.?/gi, '')
+      .replace(/\s*[,—-]?\s*digite \*?3\*? para abrir (um )?chamado\.?/gi, '')
+      .replace(/\s*[—-]?\s*digite \*?2\*? para ver o( seu)? boleto\.?/gi, '')
+      .replace(/\s*digite \*?5\*? para falar com (um )?atendente[^.\n]*\.?/gi, '')
+      .replace(/\s*Digite \*?menu\*? para (voltar ao in[íi]cio|ver as opções)[^.\n]*\.?/gi, '')
+      .replace(/\n{3,}/g, '\n\n').trim();
+    reply_endpoint = 'sendButtons';
+    reply_body = { number: item.phone, title: 'Atendimento', description: corpo || _t,
+      footer: 'Atendimento automático', buttons: acts };
+  }
 }
 
 return [{

@@ -385,7 +385,12 @@ check(t.audit && t.audit.tipo === 'segunda_via', 'auditoria tipo=segunda_via');
 check(t.audit && t.audit.cpf && String(t.audit.cpf).replace(/\D/g,'').length >= 11,
       'auditoria da 2a via leva o CPF do caminho fresco (nao grava NULL)');
 check(!/23795/.test(JSON.stringify(t.audit)), 'linha digitavel NAO vai para o log de auditoria');
-check(Object.keys(t.data).length === 0, 'sessao limpa apos mostrar faturas');
+check(t.data.contrato && t.data.verified_at && t.data.cpf,
+      'identidade preservada apos 2a via (nao repete CPF por 8h)');
+// Reaproveitamento real: logo apos a 2a via, pedir 2a via de novo NAO pede CPF.
+const treuse = turn(t.sessionRow, '2', PHONE_OK, null, FATURAS);
+check(treuse.step !== 'awaiting_cpf',
+      'apos a 2a via, nova opcao reaproveita a identidade (nao pede CPF)');
 
 // ordena da mais antiga para a mais nova
 const posPrimeira = t.reply.indexOf('15/11/2024');
@@ -507,7 +512,8 @@ check(!/-19\.45/.test(tdiag.reply) && !/dBm/i.test(tdiag.reply), 'o valor tecnic
 check(tdiag.audit && tdiag.audit.tipo === 'diagnostico', 'auditoria tipo=diagnostico');
 check(Math.abs(tdiag.audit.resposta_sgp.sinal_dbm + 19.45) < 0.01, 'auditoria guarda o sinal (dBm) para o suporte');
 check(tdiag.audit.resposta_sgp.cto === 'CTO-CENTRO-07', 'auditoria guarda a CTO para o suporte');
-check(tdiag.step === 'menu' && Object.keys(tdiag.data).length === 0, 'sessao limpa apos diagnostico');
+check(tdiag.step === 'menu' && tdiag.data.contrato && tdiag.data.verified_at,
+      'identidade preservada apos diagnostico (nao repete CPF por 8h)');
 
 // ---- Regressao: diagnostico "fixo" (sempre o mesmo aparelho) ----
 // O provedor relatou que a opcao 4 nao diferenciava o equipamento. Causa: quando
