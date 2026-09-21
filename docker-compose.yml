@@ -175,6 +175,40 @@ services:
       EVOLUTION_API_KEY: ${EVOLUTION_API_KEY}
     networks: [botsgp, proxy]
 
+  # Disparo proativo diario de aviso de fatura (template Meta oficial), N dias
+  # antes do vencimento. Fica so na rede interna: fala com Postgres (dedup +
+  # pre-semear sessao), com o SGP (lista de titulos) e com a Evolution (envio).
+  # SO envia com FATURAS_ON=true E a Evolution no Cloud API oficial com o
+  # template aprovado - antes disso o daemon roda parado, sem enviar nada.
+  faturas:
+    build: ./faturas
+    container_name: botsgp-faturas
+    restart: unless-stopped
+    depends_on:
+      postgres: { condition: service_healthy }
+    mem_limit: 256m
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      SGP_API_URL: ${SGP_API_URL}
+      SGP_API_TOKEN: ${SGP_API_TOKEN}
+      SGP_APP_NAME: ${SGP_APP_NAME}
+      EVOLUTION_API_URL: http://evolution:8080
+      EVOLUTION_INSTANCE: ${EVOLUTION_INSTANCE}
+      EVOLUTION_API_KEY: ${EVOLUTION_API_KEY}
+      FATURAS_ON: ${FATURAS_ON:-false}
+      FATURAS_DIAS_ANTES: ${FATURAS_DIAS_ANTES:-15}
+      FATURAS_TETO_DIA: ${FATURAS_TETO_DIA:-250}
+      FATURAS_HORA: ${FATURAS_HORA:-10:00}
+      FATURAS_INTERVALO_MS: ${FATURAS_INTERVALO_MS:-1500}
+      FATURAS_TEMPLATE: ${FATURAS_TEMPLATE:-aviso_fatura}
+      FATURAS_TEMPLATE_LANG: ${FATURAS_TEMPLATE_LANG:-pt_BR}
+      TZ: America/Sao_Paulo
+    networks: [botsgp]
+
   evolution:
     # O projeto migrou de atendai/ para evoapicloud/ (atendai parou no v2.2.3).
     # Versao fixada de proposito: "latest" ja quebrou compatibilidade de env vars

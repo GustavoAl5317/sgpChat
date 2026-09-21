@@ -62,3 +62,17 @@ CREATE TABLE IF NOT EXISTS wa_humano (
   atendente     TEXT,
   atualizado_em TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Disparo proativo de faturas (servico 'faturas'): registra cada titulo ja
+-- avisado para NUNCA mandar duas vezes. O disparo diario le esta tabela antes
+-- de enviar e grava depois. Chave = contrato + numero do documento do titulo.
+CREATE TABLE IF NOT EXISTS wa_fatura_avisada (
+  contrato          TEXT NOT NULL,
+  numero_documento  TEXT NOT NULL,
+  vencimento        DATE,
+  valor             NUMERIC(12,2),
+  phone             TEXT,
+  enviado_em        TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (contrato, numero_documento)
+);
+CREATE INDEX IF NOT EXISTS idx_wa_fatura_avisada_venc ON wa_fatura_avisada (vencimento);

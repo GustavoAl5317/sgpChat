@@ -40,9 +40,16 @@ const step = (sessionRow && sessionRow.step) || 'menu';
 const session = sessionRow && sessionRow.data
   ? (typeof sessionRow.data === 'string' ? JSON.parse(sessionRow.data) : sessionRow.data)
   : {};
-const text = inbound.text;
+let text = inbound.text;
 const phone = inbound.phone;
 const attempts = session.attempts || 0;
+
+// Botao "Pagar minha fatura" do template proativo (aviso_fatura): o disparo
+// diario pre-semeia a sessao (cpf+contrato+verified_at) deste telefone, entao
+// aqui basta tratar o toque como a opcao 2 (financeiro) e o fluxo cai direto na
+// 2a via. Se a sessao nao estiver fresca (ex.: toque dias depois), o menu pede
+// o CPF normalmente - degrada com seguranca.
+if (typeof text === 'string' && /pagar\s+minha\s+fatura/i.test(text)) text = '2';
 
 function cpfIsValid(cpfRaw) {
   const cpf = (cpfRaw || '').replace(/\D/g, '');

@@ -1,0 +1,14 @@
+{
+  "name": "botsgp-faturas",
+  "version": "1.0.0",
+  "description": "Disparo proativo diario de aviso de fatura (template Meta) N dias antes do vencimento.",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "start": "node disparar-faturas.js --daemon"
+  },
+  "dependencies": {
+    "node-cron": "3.0.3",
+    "pg": "8.13.1"
+  }
+}

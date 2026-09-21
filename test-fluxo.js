@@ -658,6 +658,18 @@ check(tpix.pix === '00020101PIXTESTE12345',
 check(tpix.boleto === 'https://boleto/x', 'boleto (PDF/link) enviado separado');
 check(!/`/.test(tpix.reply), 'PIX nao vai em bloco de codigo na mensagem principal');
 
+// Botao "Pagar minha fatura" (template proativo aviso_fatura): com a sessao
+// pre-semeada pelo disparo (contrato+verified_at), o toque cai direto na 2a via
+// - igualzinho a digitar 2 - sem pedir CPF.
+const tbtn = turn({ step: 'menu', data: JSON.stringify({ contrato: 42, cpf: '12345678909', verified_at: Date.now() }) },
+                  'Pagar minha fatura', PHONE_OK, null, FATURAS_PIX);
+check(/Segue os dados do boleto/i.test(tbtn.reply) && tbtn.pix === '00020101PIXTESTE12345',
+      'botao "Pagar minha fatura" -> 2a via direto (PIX+boleto), sem pedir CPF');
+// Sem sessao fresca, o mesmo toque cai no pedido de CPF (degrada com seguranca).
+const tbtnSemId = turn({ step: 'menu', data: JSON.stringify({}) }, 'Pagar minha fatura', PHONE_OK);
+check(tbtnSemId.step === 'awaiting_cpf',
+      'botao "Pagar minha fatura" sem sessao fresca -> pede CPF');
+
 // Roda o diagnostico com uma resp de CPF especifica (nao a global do ateIdentidade)
 function diagDe(resp, diag) {
   let s = null;
