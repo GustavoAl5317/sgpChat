@@ -683,6 +683,16 @@ check(treg.endpoint === 'sendButtons' && /Pagar agora/.test(treg.payload),
       'submenu regularizar -> botoes (Pagar/Promessa/Atendente)');
 check(tpix.endpoint === 'sendText',
       'resposta comum (2a via) continua sendText (nao vira interativo a toa)');
+// Toque na lista chega como o TITULO ("2 - 2ª via de boleto"); o Extract extrai
+// o digito e roteia como a opcao 2.
+const tlistpick = turn({ step: 'menu', data: JSON.stringify({ contrato: 42, cpf: '12345678909', verified_at: Date.now() }) },
+                  '2 - 2ª via de boleto', PHONE_OK, null, FATURAS_PIX);
+check(/Segue os dados do boleto/i.test(tlistpick.reply),
+      'toque na lista ("2 - ...") roteia como opcao 2 (2a via)');
+const tbtnpick = turn({ step: 'regularizar', data: JSON.stringify({ contrato: 42, cpf: '12345678909', verified_at: Date.now(), suspenso: true }) },
+                  '3 - Atendente', PHONE_OK);
+check(tbtnpick.step === 'human_handoff',
+      'toque no botao ("3 - Atendente") roteia como opcao 3');
 
 // Roda o diagnostico com uma resp de CPF especifica (nao a global do ateIdentidade)
 function diagDe(resp, diag) {

@@ -40,7 +40,13 @@ if (!selecionado) {
   selecionado = msg.conversation ||
     (msg.extendedTextMessage && msg.extendedTextMessage.text) || '';
 }
-const text = String(selecionado || '').trim();
+let text = String(selecionado || '').trim();
+// A selecao de lista/botao no Cloud API chega como o TITULO da opcao (ex.:
+// "2 - 2ª via de boleto") em msg.conversation, nao como o id. Como prefixamos o
+// numero no titulo (ver "Preparar Persistencia"), extraimos o digito inicial -
+// assim o toque na opcao e a digitacao ("2") caem exatamente no mesmo lugar.
+const _sel = text.match(/^(\d{1,2})\s*[-–)]\s+\S/);
+if (_sel) text = _sel[1];
 
 // Diagnostico: se veio uma resposta interativa, loga a forma crua uma vez -
 // assim, se algum formato novo aparecer, da para mapear o campo certo sem adivinhar.
@@ -1918,10 +1924,14 @@ function _rowsMenu() {
   const nome = {'1':'Wi-Fi','2':'2ª via de boleto','3':'Abrir chamado','4':'Diagnóstico','5':'Falar com atendente'};
   const desc = {'1':'Alterar nome/senha da rede','2':'Ver faturas em aberto','3':'Registrar um problema','4':'Checar o sinal da conexão','5':'Atendimento humano'};
   const re = /\*(\d)\*\s*-\s*[^\n]+/g, out = []; let m;
-  while ((m = re.exec(_t))) { out.push({ title: (nome[m[1]] || ('Opção ' + m[1])).slice(0, 24), description: (desc[m[1]] || '').slice(0, 72), rowId: m[1] }); }
+  // O titulo leva o numero na frente ("2 - 2ª via de boleto"): a Evolution
+  // devolve o TITULO da opcao escolhida (nao o id), e o Extract Inbound extrai
+  // o digito inicial dele para rotear.
+  while ((m = re.exec(_t))) { out.push({ title: (m[1] + ' - ' + (nome[m[1]] || ('Opção ' + m[1]))).slice(0, 24), description: (desc[m[1]] || '').slice(0, 72), rowId: m[1] }); }
   return out;
 }
-function _btn(id, txt) { return { type: 'reply', displayText: txt, id: id }; }
+// displayText tambem leva o numero na frente, pelo mesmo motivo dos titulos da lista.
+function _btn(id, txt) { return { type: 'reply', displayText: (id + ' - ' + txt).slice(0, 20), id: id }; }
 if (/Sou o atendimento autom/i.test(_t) && /2ª via de boleto/i.test(_t)) {
   reply_endpoint = 'sendList';
   reply_body = { number: item.phone, title: 'Atendimento', description: _t,
