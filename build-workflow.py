@@ -1989,6 +1989,14 @@ if (/Sou o atendimento autom/i.test(_t) && /2ª via de boleto/i.test(_t)) {
   reply_body = { number: item.phone, title: 'Wi-Fi', description: _t,
     footer: 'Atendimento automático',
     buttons: [_btn('1', 'Só o nome'), _btn('2', 'Só a senha'), _btn('3', 'Nome e senha')] };
+} else if (/mais de um contrato/i.test(_t) && /Qual deles/i.test(_t)) {
+  // Escolha de contrato: rows dinamicas ("*N* - <plano> - <endereco>").
+  reply_endpoint = 'sendList';
+  const reC = /\*(\d+)\*\s*-\s*([^\n]+)/g, rowsC = []; let mC;
+  while ((mC = reC.exec(_t))) { rowsC.push({ title: (mC[1] + ' - ' + mC[2]).slice(0, 24), description: mC[2].slice(0, 72), rowId: mC[1] }); }
+  reply_body = { number: item.phone, title: 'Seus contratos', description: _t,
+    buttonText: 'Escolher contrato', footerText: 'Atendimento automático',
+    sections: [{ title: 'Contratos', rows: rowsC }] };
 } else if (/para confirmar/i.test(_t) && /para cancelar/i.test(_t)) {
   reply_endpoint = 'sendButtons';
   reply_body = { number: item.phone, title: 'Confirmação', description: _t,
