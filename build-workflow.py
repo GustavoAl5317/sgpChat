@@ -14,13 +14,41 @@ const remoteJid = key.remoteJid || '';
 const phone = remoteJid.split('@')[0];
 const fromMe = !!key.fromMe;
 const msg = data.message || {};
-const text = (
-  msg.conversation ||
-  (msg.extendedTextMessage && msg.extendedTextMessage.text) ||
+
+// Resposta de botao/lista PRIMEIRO, texto puro depois. Motivo: no Cloud API
+// (Meta) a selecao de uma lista chega com o TITULO em msg.conversation e o
+// id/rowId noutro campo - se lermos conversation antes, pegamos "2ª via de
+// boleto" em vez de "2" e o menu se repete. Baileys e Cloud entregam a selecao
+// em campos diferentes, entao tentamos todos; o id (que definimos como o numero
+// da opcao) tem prioridade.
+const inter = msg.interactive || {};
+const nfr = (msg.interactiveResponseMessage &&
+             msg.interactiveResponseMessage.nativeFlowResponseMessage) || null;
+let selecionado =
   (msg.buttonsResponseMessage && msg.buttonsResponseMessage.selectedButtonId) ||
+  (msg.templateButtonReplyMessage && msg.templateButtonReplyMessage.selectedId) ||
   (msg.listResponseMessage && msg.listResponseMessage.singleSelectReply && msg.listResponseMessage.singleSelectReply.selectedRowId) ||
-  ''
-).trim();
+  (inter.list_reply && inter.list_reply.id) ||
+  (inter.button_reply && inter.button_reply.id) ||
+  '';
+// nativeFlowResponse (Cloud normalizado): o id vem num JSON em paramsJson.
+if (!selecionado && nfr && nfr.paramsJson) {
+  try { const p = JSON.parse(nfr.paramsJson); selecionado = p.id || p.selectedId || p.rowId || ''; } catch (e) {}
+}
+// So depois de esgotar a selecao interativa, cai no texto digitado.
+if (!selecionado) {
+  selecionado = msg.conversation ||
+    (msg.extendedTextMessage && msg.extendedTextMessage.text) || '';
+}
+const text = String(selecionado || '').trim();
+
+// Diagnostico: se veio uma resposta interativa, loga a forma crua uma vez -
+// assim, se algum formato novo aparecer, da para mapear o campo certo sem adivinhar.
+if (msg.buttonsResponseMessage || msg.listResponseMessage || inter.list_reply ||
+    inter.button_reply || msg.templateButtonReplyMessage || msg.interactiveResponseMessage) {
+  try { console.log('[extract] interativo -> "' + text + '" | keys=' + Object.keys(msg).join(',') +
+                    ' | ' + JSON.stringify(msg).slice(0, 500)); } catch (e) {}
+}
 
 // Ignora o que nao for mensagem de texto vinda do cliente (ack, status, msg propria)
 // e conversas de grupo (o bot atende so no privado).
