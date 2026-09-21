@@ -157,6 +157,7 @@ function turn(sessionRow, text, phone, sgpResponse, faturas, diag, espiar, acs, 
   return { reply: p.reply_text, step: p.step, sessionRow: { step: p.step, data: p.data },
            data: JSON.parse(p.data), audit: p.audit ? JSON.parse(p.audit) : null,
            pix: p.pix_code || '', boleto: p.boleto_url || '',
+           endpoint: p.reply_endpoint, payload: p.reply_payload || '',
            montado: montado };
 }
 
@@ -669,6 +670,19 @@ check(/Segue os dados do boleto/i.test(tbtn.reply) && tbtn.pix === '00020101PIXT
 const tbtnSemId = turn({ step: 'menu', data: JSON.stringify({}) }, 'Pagar minha fatura', PHONE_OK);
 check(tbtnSemId.step === 'awaiting_cpf',
       'botao "Pagar minha fatura" sem sessao fresca -> pede CPF');
+
+// Apresentacao interativa (Cloud API): menu vira LISTA, submenus viram BOTOES.
+const tmenu = turn(null, 'oi', PHONE_OK);
+check(tmenu.endpoint === 'sendList' && /"rowId":"2"/.test(tmenu.payload),
+      'menu principal -> lista interativa (com rowId das opcoes)');
+check(/Digite o número da opção/.test(tmenu.reply),
+      'texto numerado do menu vai junto (fallback de quem nao ve a lista)');
+const treg = turn({ step: 'regularizar', data: JSON.stringify({ contrato: 42, cpf: '12345678909', verified_at: Date.now(), suspenso: true }) },
+                  'x', PHONE_OK);
+check(treg.endpoint === 'sendButtons' && /Pagar agora/.test(treg.payload),
+      'submenu regularizar -> botoes (Pagar/Promessa/Atendente)');
+check(tpix.endpoint === 'sendText',
+      'resposta comum (2a via) continua sendText (nao vira interativo a toa)');
 
 // Roda o diagnostico com uma resp de CPF especifica (nao a global do ateIdentidade)
 function diagDe(resp, diag) {

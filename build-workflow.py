@@ -1877,12 +1877,55 @@ if (stepAntes === 'awaiting_password' || stepAntes === 'awaiting_second_factor')
   msgEntrada = '••••••';
 }
 
+// --- Apresentacao interativa (Cloud API) ---------------------------------
+// No Baileys os botoes chegavam em branco, entao o menu era so texto. No Cloud
+// API oficial eles renderizam, entao aqui o menu de 5 opcoes vira LISTA e os
+// submenus de ate 3 opcoes viram BOTOES. O texto numerado vai junto (no corpo),
+// entao quem nao ver os botoes ainda digita o numero. O id/rowId e o proprio
+// numero da opcao - o Extract Inbound ja converte botao/lista em texto.
+let reply_endpoint = 'sendText';
+let reply_body = { number: item.phone, text: texto };
+const _t = String(texto);
+function _rowsMenu() {
+  const nome = {'1':'Wi-Fi','2':'2ª via de boleto','3':'Abrir chamado','4':'Diagnóstico','5':'Falar com atendente'};
+  const desc = {'1':'Alterar nome/senha da rede','2':'Ver faturas em aberto','3':'Registrar um problema','4':'Checar o sinal da conexão','5':'Atendimento humano'};
+  const re = /\*(\d)\*\s*-\s*[^\n]+/g, out = []; let m;
+  while ((m = re.exec(_t))) { out.push({ title: (nome[m[1]] || ('Opção ' + m[1])).slice(0, 24), description: (desc[m[1]] || '').slice(0, 72), rowId: m[1] }); }
+  return out;
+}
+function _btn(id, txt) { return { type: 'reply', displayText: txt, id: id }; }
+if (/Sou o atendimento autom/i.test(_t) && /2ª via de boleto/i.test(_t)) {
+  reply_endpoint = 'sendList';
+  reply_body = { number: item.phone, title: 'Atendimento', description: _t,
+    buttonText: 'Ver opções', footerText: 'Atendimento automático',
+    sections: [{ title: 'Opções', rows: _rowsMenu() }] };
+} else if (/falta de pagamento/i.test(_t) && /Promessa de pagamento/i.test(_t)) {
+  reply_endpoint = 'sendButtons';
+  reply_body = { number: item.phone, title: 'Regularizar', description: _t,
+    footer: 'Atendimento automático',
+    buttons: [_btn('1', 'Pagar agora'), _btn('2', 'Promessa'), _btn('3', 'Atendente')] };
+} else if (/O que você quer alterar/i.test(_t) && /Só a senha/i.test(_t)) {
+  reply_endpoint = 'sendButtons';
+  reply_body = { number: item.phone, title: 'Wi-Fi', description: _t,
+    footer: 'Atendimento automático',
+    buttons: [_btn('1', 'Só o nome'), _btn('2', 'Só a senha'), _btn('3', 'Nome e senha')] };
+} else if (/para confirmar/i.test(_t) && /para cancelar/i.test(_t)) {
+  reply_endpoint = 'sendButtons';
+  reply_body = { number: item.phone, title: 'Confirmação', description: _t,
+    footer: 'Atendimento automático',
+    buttons: [_btn('1', 'Confirmar'), _btn('2', 'Cancelar')] };
+}
+
 return [{
   json: {
     phone: item.phone,
     step: item.next_step,
     data: JSON.stringify(merged),
     reply_text: texto,
+    // Formato do envio (montado acima): sendText | sendButtons | sendList, e o
+    // corpo JSON pronto. O node de envio so le esses dois campos.
+    reply_endpoint: reply_endpoint,
+    reply_payload: JSON.stringify(reply_body),
     audit: item._audit ? JSON.stringify(item._audit) : null,
     msg_in: msgEntrada,
     msg_out: texto,
@@ -2344,9 +2387,12 @@ nodes = [
 
     {"parameters": {
         "method": "POST",
-        "url": "={{ $env.EVOLUTION_API_URL }}/message/sendText/{{ $env.EVOLUTION_INSTANCE }}",
+        # Endpoint e corpo sao montados em "Preparar Persistencia": sendText para
+        # texto puro, sendButtons/sendList para os menus interativos. Assim o menu
+        # sai como lista e os submenus como botoes, sem um node por formato.
+        "url": "={{ $env.EVOLUTION_API_URL }}/message/{{ $('Preparar Persistencia').first().json.reply_endpoint }}/{{ $env.EVOLUTION_INSTANCE }}",
         "sendBody": True, "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ number: $('Preparar Persistencia').first().json.phone, text: $('Preparar Persistencia').first().json.reply_text }) }}",
+        "jsonBody": "={{ $('Preparar Persistencia').first().json.reply_payload }}",
         "sendHeaders": True,
         "headerParameters": {"parameters": [{"name": "apikey", "value": "={{ $env.EVOLUTION_API_KEY }}"}]},
         "options": {"timeout": 20000}},

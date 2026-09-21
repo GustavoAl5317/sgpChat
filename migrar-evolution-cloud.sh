@@ -72,8 +72,13 @@ ${GRN}== Falta configurar o webhook DO LADO DA META ==${RST}
 No app da Meta (developers.facebook.com) -> WhatsApp -> Configuracao -> Webhook:
 
   Callback URL : https://${EVOLUTION_DOMAIN:-<EVOLUTION_DOMAIN>}/webhook/meta
-  Verify Token : ${EVOLUTION_API_KEY}
+  Verify Token : ${WA_BUSINESS_TOKEN_WEBHOOK:-evolution}
   Assinar o campo (Webhook fields): ${YLW}messages${RST}
+
+  (O Verify Token do Cloud API e o WA_BUSINESS_TOKEN_WEBHOOK da Evolution, cujo
+   padrao e "evolution" - NAO e a EVOLUTION_API_KEY. Confirme com:
+   curl "https://${EVOLUTION_DOMAIN:-<EVOLUTION_DOMAIN>}/webhook/meta?hub.mode=subscribe&hub.verify_token=evolution&hub.challenge=OK"
+   deve responder "OK".)
 
 (Se a Evolution usar outro caminho de callback nesta versao, a resposta do
  create acima ou os logs mostram o certo - me manda que eu confirmo.)
