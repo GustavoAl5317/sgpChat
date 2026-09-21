@@ -382,6 +382,8 @@ check(t.boleto && /boleto\//.test(t.boleto), 'boleto (PDF/link) enviado separado
 check(/R\$ 9,91/.test(t.reply), 'valor formatado em BRL com juros');
 check(/05\/08\/2026/.test(t.reply), 'data convertida de ISO para DD/MM/AAAA');
 check(t.audit && t.audit.tipo === 'segunda_via', 'auditoria tipo=segunda_via');
+check(t.audit && t.audit.cpf && String(t.audit.cpf).replace(/\D/g,'').length >= 11,
+      'auditoria da 2a via leva o CPF do caminho fresco (nao grava NULL)');
 check(!/23795/.test(JSON.stringify(t.audit)), 'linha digitavel NAO vai para o log de auditoria');
 check(Object.keys(t.data).length === 0, 'sessao limpa apos mostrar faturas');
 

@@ -1490,6 +1490,25 @@ if (!links.length) {
 
 const session_patch = Object.assign({}, prev.session_patch, { reset: true });
 
+// cpf/contrato para a auditoria variam com o caminho:
+//  - identidade reaproveitada: ja vem na sessao/sgp_payload do Parse & Route.
+//  - CPF digitado nesta rodada: o cpf esta no session_patch do Parse & Route (a
+//    sessao ainda nao foi persistida) e o contrato foi resolvido no
+//    "Processar Consulta CPF". Ler prev.session.cpf aqui gravava NULL e o
+//    NOT NULL da coluna quebrava o fluxo inteiro (sem resposta ao cliente).
+let auditCpf = (prev.session_patch && prev.session_patch.cpf) ||
+               (prev.session && prev.session.cpf) ||
+               (prev.sgp_payload && prev.sgp_payload.cpf) || '';
+let auditContrato = (prev.sgp_payload && prev.sgp_payload.contrato) || '';
+try {
+  const cc = $('Processar Consulta CPF').first().json;
+  if (cc) {
+    if (!auditContrato) auditContrato = (cc.sgp_payload && cc.sgp_payload.contrato) ||
+                                        (cc.session_patch && cc.session_patch.contrato) || '';
+    if (!auditCpf) auditCpf = (cc.session_patch && cc.session_patch.cpf) || '';
+  }
+} catch (e) {}
+
 return [{ json: Object.assign({}, prev, {
   reply_text: reply_text,
   next_step: next_step,
@@ -1499,8 +1518,8 @@ return [{ json: Object.assign({}, prev, {
   _audit: {
     tipo: 'segunda_via',
     phone: prev.phone,
-    cpf: prev.session.cpf,
-    contrato: prev.sgp_payload.contrato,
+    cpf: auditCpf,
+    contrato: auditContrato,
     ssid_novo: null,
     sucesso: links.length > 0,
     // Nao guarda linha digitavel nem link no log de auditoria: sao dados de
@@ -1848,6 +1867,29 @@ reply_text += '\n\nDigite *menu* para voltar ao início.';
 
 const session_patch = Object.assign({}, prev.session_patch, { reset: true });
 
+// cpf/contrato para a auditoria (mesmo cuidado da 2a via): no CPF digitado
+// agora, o cpf esta no session_patch e o contrato foi resolvido no
+// "Processar Consulta CPF" - prev.session.cpf aqui seria NULL e quebraria o
+// insert (coluna NOT NULL), deixando o cliente sem resposta.
+let auditCpf = (prev.session_patch && prev.session_patch.cpf) ||
+               (prev.session && prev.session.cpf) || '';
+let auditContrato = (prev.sgp_payload && prev.sgp_payload.contrato) || '';
+try {
+  const pr = $('Parse & Route').first().json;
+  if (!auditCpf) auditCpf = (pr.session_patch && pr.session_patch.cpf) ||
+                            (pr.session && pr.session.cpf) ||
+                            (pr.sgp_payload && pr.sgp_payload.cpf) || '';
+  if (!auditContrato) auditContrato = (pr.sgp_payload && pr.sgp_payload.contrato) || '';
+} catch (e) {}
+try {
+  const cc = $('Processar Consulta CPF').first().json;
+  if (cc) {
+    if (!auditContrato) auditContrato = (cc.sgp_payload && cc.sgp_payload.contrato) ||
+                                        (cc.session_patch && cc.session_patch.contrato) || '';
+    if (!auditCpf) auditCpf = (cc.session_patch && cc.session_patch.cpf) || '';
+  }
+} catch (e) {}
+
 return [{ json: Object.assign({}, prev, {
   reply_text: reply_text,
   next_step: 'menu',
@@ -1855,8 +1897,8 @@ return [{ json: Object.assign({}, prev, {
   _audit: {
     tipo: 'diagnostico',
     phone: prev.phone,
-    cpf: prev.session.cpf,
-    contrato: prev.sgp_payload.contrato,
+    cpf: auditCpf,
+    contrato: auditContrato,
     ssid_novo: null,
     sucesso: temEquip,
     resposta_sgp: { onu_id: prev.onu_id, cto: onu.cto || null, sinal_dbm: dbm,
@@ -2382,6 +2424,9 @@ nodes = [
                               "RETURNING 1;"),
                     "options": {"queryReplacement": "={{ [$('Preparar Persistencia').first().json.audit] }}"}},
      "id": "pg-audit", "name": "Gravar Auditoria", "type": "n8n-nodes-base.postgres",
+     # Auditoria NUNCA pode derrubar a resposta ao cliente: se o insert falhar
+     # (constraint, banco fora), continua para o envio mesmo assim.
+     "onError": "continueRegularOutput", "alwaysOutputData": True,
      "typeVersion": 2.4, "position": [2650, -120], "credentials": PG_CRED},
 
     # Registro da conversa para o painel. Ramo PARALELO ao envio (sai do Upsert
