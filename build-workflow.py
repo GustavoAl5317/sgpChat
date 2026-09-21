@@ -404,10 +404,19 @@ let sgp_payload = {};
 // desde que a identidade validada sobrevive entre modulos, "sair" precisa
 // ser um jeito explicito de encerrar. Sem isso, quem digita "sair" achando
 // que fechou o atendimento deixa a sessao autenticada aberta na janela.
-if (/^(menu|sair|voltar|inicio|0)$/i.test(text)) {
+// "sair" encerra o atendimento e ESQUECE a identidade (logout explicito).
+if (/^sair$/i.test(text)) {
   return [{ json: { phone, text, step, session,
     reply_text: MENU, next_step: 'menu',
     session_patch: { reset: true }, sgp_action: 'none', sgp_payload: {} } }];
+}
+// "menu"/"voltar"/"inicio"/"0" (inclui o botao "Voltar ao menu") so voltam ao
+// menu MANTENDO a identidade por 8h - o cliente resolve outra coisa sem repetir
+// o CPF. soft_reset limpa os dados da etapa e preserva cpf/contrato/verified_at.
+if (/^(menu|voltar|inicio|0)$/i.test(text)) {
+  return [{ json: { phone, text, step, session,
+    reply_text: MENU, next_step: 'menu',
+    session_patch: { soft_reset: true }, sgp_action: 'none', sgp_payload: {} } }];
 }
 
 // Na fila do atendente (human_handoff) o cliente ainda pode resolver sozinho:

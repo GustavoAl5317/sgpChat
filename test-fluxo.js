@@ -351,13 +351,14 @@ check(t.step === 'awaiting_cpf', 'contrato na sessao sem validacao nao vale iden
 t = turn(sessaoValidada(-60 * 60 * 1000), '2', PHONE_OK, null, FATURAS);
 check(t.step === 'awaiting_cpf', 'verified_at no futuro nao e aceito');
 
-// "menu"/"sair" reinicia: o reset limpa a identidade junto. Vale tambem
-// estando ja no menu - e o unico jeito do cliente encerrar de proposito.
+// "menu"/"voltar" volta ao menu MAS mantem a identidade (8h) - so limpa os
+// dados da etapa. "sair" e o unico que encerra e esquece a identidade.
 let sv = sessaoValidada(60 * 1000); sv.step = 'awaiting_ssid';
 t = turn(sv, 'menu', PHONE_OK);
-check(Object.keys(t.data).length === 0, 'digitar menu no meio do fluxo descarta a identidade');
+check(t.data.contrato && t.data.verified_at && t.data.wifi_alvo === undefined,
+      'digitar "menu" volta ao menu mantendo a identidade (8h), sem os dados da etapa');
 t = turn(sessaoValidada(60 * 1000), 'sair', PHONE_OK);
-check(Object.keys(t.data).length === 0, 'digitar sair no menu encerra a sessao autenticada');
+check(Object.keys(t.data).length === 0, 'digitar "sair" encerra e esquece a identidade');
 
 // ---- Nome atual da rede no prompt do Wi-Fi ----
 // O cliente nao sabe o que e "SSID" e nao lembra o nome da propria rede.
