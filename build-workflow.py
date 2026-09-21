@@ -2077,8 +2077,14 @@ if (reply_endpoint === 'sendText') {
       .replace(/\s*digite \*?5\*? para falar com (um )?atendente[^.\n]*\.?/gi, '')
       .replace(/\s*Digite \*?menu\*? para (voltar ao in[íi]cio|ver as opções)[^.\n]*\.?/gi, '')
       .replace(/\n{3,}/g, '\n\n').trim();
+    // Titulo contextual: nao reusar "Atendimento" (titulo do menu) para nao
+    // parecer que "so veio o menu". Reflete o conteudo da mensagem.
+    let _titulo = 'RCNet';
+    if (/fatura|boleto|pix/i.test(_t)) _titulo = 'Fatura';
+    else if (/chamado|protocolo/i.test(_t)) _titulo = 'Chamado';
+    else if (/sinal|conex|diagn|internet/i.test(_t)) _titulo = 'Diagnóstico';
     reply_endpoint = 'sendButtons';
-    reply_body = { number: item.phone, title: 'Atendimento', description: corpo || _t,
+    reply_body = { number: item.phone, title: _titulo, description: corpo || _t,
       footer: 'Atendimento automático', buttons: acts };
   }
 }
