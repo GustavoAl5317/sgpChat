@@ -2005,71 +2005,53 @@ if (stepAntes === 'awaiting_password' || stepAntes === 'awaiting_second_factor')
 }
 
 // --- Apresentacao interativa (Cloud API) ---------------------------------
-// No Baileys os botoes chegavam em branco, entao o menu era so texto. No Cloud
-// API oficial eles renderizam, entao aqui o menu de 5 opcoes vira LISTA e os
-// submenus de ate 3 opcoes viram BOTOES. O texto numerado vai junto (no corpo),
-// entao quem nao ver os botoes ainda digita o numero. O id/rowId e o proprio
-// numero da opcao - o Extract Inbound ja converte botao/lista em texto.
+// SEMPRE lista (sendList). Nesta versao da Evolution o sendButtons NAO exibe o
+// corpo (description) no Cloud API - manda so o titulo + os botoes -, entao o
+// protocolo do chamado, os detalhes da confirmacao, o aviso de "sem fatura" etc.
+// sumiam. A lista mostra o corpo E as opcoes; o cliente TOCA em "Ver opcoes"
+// (nao digita). Os titulos das rows levam o numero na frente ("2 - ..."): a
+// Evolution devolve o TITULO da opcao escolhida (nao o id) e o Extract Inbound
+// extrai o digito inicial para rotear.
 let reply_endpoint = 'sendText';
 let reply_body = { number: item.phone, text: texto };
 const _t = String(texto);
-function _rowsMenu() {
-  const nome = {'1':'Wi-Fi','2':'2ª via de boleto','3':'Abrir chamado','4':'Diagnóstico','5':'Falar com atendente'};
-  const desc = {'1':'Alterar nome/senha da rede','2':'Ver faturas em aberto','3':'Registrar um problema','4':'Checar o sinal da conexão','5':'Atendimento humano'};
-  const re = /\*(\d)\*\s*-\s*[^\n]+/g, out = []; let m;
-  // O titulo leva o numero na frente ("2 - 2ª via de boleto"): a Evolution
-  // devolve o TITULO da opcao escolhida (nao o id), e o Extract Inbound extrai
-  // o digito inicial dele para rotear.
-  while ((m = re.exec(_t))) { out.push({ title: (m[1] + ' - ' + (nome[m[1]] || ('Opção ' + m[1]))).slice(0, 24), description: (desc[m[1]] || '').slice(0, 72), rowId: m[1] }); }
-  return out;
+function _row(id, label, desc) {
+  return { title: (id + ' - ' + label).slice(0, 24), description: String(desc || '').slice(0, 72), rowId: String(id) };
 }
-// displayText tambem leva o numero na frente, pelo mesmo motivo dos titulos da lista.
-function _btn(id, txt) { return { type: 'reply', displayText: (id + ' - ' + txt).slice(0, 20), id: id }; }
+function _lista(titulo, botao, rows, corpo) {
+  reply_endpoint = 'sendList';
+  reply_body = { number: item.phone, title: titulo, description: corpo || _t,
+    buttonText: botao, footerText: 'Atendimento automático',
+    sections: [{ title: 'Opções', rows: rows }] };
+}
 if (/Sou o atendimento autom/i.test(_t) && /2ª via de boleto/i.test(_t)) {
-  reply_endpoint = 'sendList';
-  reply_body = { number: item.phone, title: 'Atendimento', description: _t,
-    buttonText: 'Ver opções', footerText: 'Atendimento automático',
-    sections: [{ title: 'Opções', rows: _rowsMenu() }] };
+  const nome = {'1':'Wi-Fi','2':'2ª via de boleto','3':'Abrir chamado','4':'Diagnóstico','5':'Falar com atendente'};
+  const dsc = {'1':'Alterar nome/senha da rede','2':'Ver faturas em aberto','3':'Registrar um problema','4':'Checar o sinal da conexão','5':'Atendimento humano'};
+  const re = /\*(\d)\*\s*-\s*[^\n]+/g, rows = []; let m;
+  while ((m = re.exec(_t))) rows.push(_row(m[1], nome[m[1]] || ('Opção ' + m[1]), dsc[m[1]]));
+  _lista('Menu', 'Ver opções', rows);
 } else if (/falta de pagamento/i.test(_t) && /Promessa de pagamento/i.test(_t)) {
-  reply_endpoint = 'sendButtons';
-  reply_body = { number: item.phone, title: 'Regularizar', description: _t,
-    footer: 'Atendimento automático',
-    buttons: [_btn('1', 'Pagar agora'), _btn('2', 'Promessa'), _btn('3', 'Atendente')] };
+  _lista('Regularizar', 'Escolher opção',
+    [_row('1', 'Pagar agora', 'PIX ou boleto'), _row('2', 'Promessa', 'Promessa de pagamento'), _row('3', 'Atendente', 'Falar com atendente')]);
 } else if (/O que você quer alterar/i.test(_t) && /Só a senha/i.test(_t)) {
-  reply_endpoint = 'sendButtons';
-  reply_body = { number: item.phone, title: 'Wi-Fi', description: _t,
-    footer: 'Atendimento automático',
-    buttons: [_btn('1', 'Só o nome'), _btn('2', 'Só a senha'), _btn('3', 'Nome e senha')] };
+  _lista('Wi-Fi', 'Escolher opção',
+    [_row('1', 'Só o nome'), _row('2', 'Só a senha'), _row('3', 'Nome e senha')]);
 } else if (/mais de um contrato/i.test(_t) && /Qual deles/i.test(_t)) {
-  // Escolha de contrato: rows dinamicas ("*N* - <plano> - <endereco>").
-  reply_endpoint = 'sendList';
-  const reC = /\*(\d+)\*\s*-\s*([^\n]+)/g, rowsC = []; let mC;
-  while ((mC = reC.exec(_t))) { rowsC.push({ title: (mC[1] + ' - ' + mC[2]).slice(0, 24), description: mC[2].slice(0, 72), rowId: mC[1] }); }
-  reply_body = { number: item.phone, title: 'Seus contratos', description: _t,
-    buttonText: 'Escolher contrato', footerText: 'Atendimento automático',
-    sections: [{ title: 'Contratos', rows: rowsC }] };
+  const re = /\*(\d+)\*\s*-\s*([^\n]+)/g, rows = []; let mC;
+  while ((mC = re.exec(_t))) rows.push(_row(mC[1], mC[2], mC[2]));
+  _lista('Seus contratos', 'Escolher contrato', rows);
 } else if (/para confirmar/i.test(_t) && /para cancelar/i.test(_t)) {
-  reply_endpoint = 'sendButtons';
-  reply_body = { number: item.phone, title: 'Confirmação', description: _t,
-    footer: 'Atendimento automático',
-    buttons: [_btn('1', 'Confirmar'), _btn('2', 'Cancelar')] };
-}
-
-// Telas de RESULTADO que instruem "digite X" (diagnostico, sem fatura, erros):
-// vira botao, para o cliente TOCAR em vez de digitar. Detecta as acoes citadas,
-// monta ate 3 botoes (id = numero da opcao) e tira o "digite ..." do corpo.
-// So age em mensagem de texto simples - nao mexe nos menus/submenus acima nem
-// nas telas de digitacao (CPF, senha), que nao citam "digite <opcao>".
-if (reply_endpoint === 'sendText') {
-  const acts = [];
-  const add = function (id, txt) {
-    if (acts.length < 3 && !acts.some(function (b) { return b.id === id; })) acts.push(_btn(id, txt));
-  };
-  if (/digite \*?2\*?|ver o( seu)? boleto/i.test(_t)) add('2', 'Ver boleto');
-  if (/digite \*?3\*?|abrir (um )?chamado/i.test(_t)) add('3', 'Abrir chamado');
-  if (/digite \*?5\*?|falar com (um )?atendente|transferir para um atendente/i.test(_t)) add('5', 'Atendente');
-  if (/digite \*?menu\*?|voltar ao in[íi]cio/i.test(_t)) add('0', 'Voltar ao menu');
-  if (acts.length) {
+  _lista('Confirmação', 'Escolher opção', [_row('1', 'Confirmar'), _row('2', 'Cancelar')]);
+} else {
+  // Telas de resultado que instruem "digite X" (diagnostico, sem fatura, erros):
+  // as acoes viram rows e o "digite ..." sai do corpo (o cliente toca, nao digita).
+  const rows = [];
+  const addR = function (id, label, d) { if (rows.length < 10 && !rows.some(function (r) { return r.rowId === id; })) rows.push(_row(id, label, d)); };
+  if (/digite \*?2\*?|ver o( seu)? boleto/i.test(_t)) addR('2', 'Ver boleto', '2ª via / PIX');
+  if (/digite \*?3\*?|abrir (um )?chamado/i.test(_t)) addR('3', 'Abrir chamado', 'Registrar um problema');
+  if (/digite \*?5\*?|falar com (um )?atendente|transferir para um atendente/i.test(_t)) addR('5', 'Atendente', 'Atendimento humano');
+  if (/digite \*?menu\*?|voltar ao in[íi]cio/i.test(_t)) addR('0', 'Voltar ao menu', 'Início');
+  if (rows.length) {
     const corpo = _t
       .replace(/\s*Se n[aã]o resolver,?\s*digite \*?3\*? para abrir (um )?chamado\.?/gi, '')
       .replace(/\s*[,—-]?\s*digite \*?3\*? para abrir (um )?chamado\.?/gi, '')
@@ -2077,15 +2059,11 @@ if (reply_endpoint === 'sendText') {
       .replace(/\s*digite \*?5\*? para falar com (um )?atendente[^.\n]*\.?/gi, '')
       .replace(/\s*Digite \*?menu\*? para (voltar ao in[íi]cio|ver as opções)[^.\n]*\.?/gi, '')
       .replace(/\n{3,}/g, '\n\n').trim();
-    // Titulo contextual: nao reusar "Atendimento" (titulo do menu) para nao
-    // parecer que "so veio o menu". Reflete o conteudo da mensagem.
-    let _titulo = 'RCNet';
-    if (/fatura|boleto|pix/i.test(_t)) _titulo = 'Fatura';
-    else if (/chamado|protocolo/i.test(_t)) _titulo = 'Chamado';
-    else if (/sinal|conex|diagn|internet/i.test(_t)) _titulo = 'Diagnóstico';
-    reply_endpoint = 'sendButtons';
-    reply_body = { number: item.phone, title: _titulo, description: corpo || _t,
-      footer: 'Atendimento automático', buttons: acts };
+    let titulo = 'RCNet';
+    if (/fatura|boleto|pix/i.test(_t)) titulo = 'Fatura';
+    else if (/chamado|protocolo/i.test(_t)) titulo = 'Chamado';
+    else if (/sinal|conex|diagn|internet/i.test(_t)) titulo = 'Diagnóstico';
+    _lista(titulo, 'Opções', rows, corpo);
   }
 }
 

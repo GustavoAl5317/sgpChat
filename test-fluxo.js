@@ -688,10 +688,16 @@ check(/Digite o número da opção/.test(tmenu.reply),
       'texto numerado do menu vai junto (fallback de quem nao ve a lista)');
 const treg = turn({ step: 'regularizar', data: JSON.stringify({ contrato: 42, cpf: '12345678909', verified_at: Date.now(), suspenso: true }) },
                   'x', PHONE_OK);
-check(treg.endpoint === 'sendButtons' && /Pagar agora/.test(treg.payload),
-      'submenu regularizar -> botoes (Pagar/Promessa/Atendente)');
+check(treg.endpoint === 'sendList' && /Pagar agora/.test(treg.payload) && /falta de pagamento/.test(treg.payload),
+      'submenu regularizar -> lista (opcoes + corpo com a explicacao)');
 check(tpix.endpoint === 'sendText',
       'resposta comum (2a via) continua sendText (nao vira interativo a toa)');
+// Tela de resultado (sem fatura): vira lista, mas o AVISO tem que ir no corpo
+// (o sendButtons engolia o corpo no Cloud API - por isso usamos lista).
+const tsemfat = turn({ step: 'menu', data: JSON.stringify({ contrato: 42, cpf: '12345678909', verified_at: Date.now() }) },
+                  '2', PHONE_OK, null, { status: 1, razaoSocial: 'X', links: [] });
+check(tsemfat.endpoint === 'sendList' && /Boa not[ií]cia|fatura em aberto/i.test(tsemfat.payload),
+      'sem fatura -> lista com o aviso no corpo (corpo nao some)');
 // Toque na lista chega como o TITULO ("2 - 2ª via de boleto"); o Extract extrai
 // o digito e roteia como a opcao 2.
 const tlistpick = turn({ step: 'menu', data: JSON.stringify({ contrato: 42, cpf: '12345678909', verified_at: Date.now() }) },
