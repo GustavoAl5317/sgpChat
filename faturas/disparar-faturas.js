@@ -32,7 +32,9 @@ const SGP_TOKEN = process.env.SGP_API_TOKEN || '';
 const SGP_APP   = process.env.SGP_APP_NAME || '';
 
 const EVO_URL   = (process.env.EVOLUTION_API_URL || 'http://evolution:8080').replace(/\/+$/, '');
-const EVO_INST  = process.env.EVOLUTION_INSTANCE || '';
+// Instancia do DISPARO (numero de faturas). Por padrao usa a mesma do bot; ao
+// separar em 2 numeros, aponte FATURAS_INSTANCE para a instancia do 9234.
+const EVO_INST  = process.env.FATURAS_INSTANCE || process.env.EVOLUTION_INSTANCE || '';
 const EVO_KEY   = process.env.EVOLUTION_API_KEY || '';
 
 const ON          = String(process.env.FATURAS_ON || 'false').trim().toLowerCase() === 'true';

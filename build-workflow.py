@@ -8,6 +8,10 @@ const raw = $input.first().json;
 // O node de Webhook entrega o corpo da requisicao dentro de `body`. O
 // fallback para a raiz cobre chamadas diretas ao node (testes e replay).
 const item = raw.body || raw;
+// Instancia da Evolution de onde a mensagem veio (qual NUMERO). O bot responde
+// nesta mesma instancia, para funcionar com 2 numeros (agente e disparo) sem
+// numero fixo. Fallback vazio -> o node de envio usa o EVOLUTION_INSTANCE.
+const instance = item.instance || raw.instance || '';
 const data = item.data || {};
 const key = data.key || {};
 const remoteJid = key.remoteJid || '';
@@ -62,7 +66,7 @@ if (item.event !== 'messages.upsert' || fromMe || !phone || !text || remoteJid.e
   return [];
 }
 
-return [{ json: { phone, text } }];
+return [{ json: { phone, text, instance } }];
 """
 
 # ---------------------------------------------------------------- Parse & Route
@@ -2682,7 +2686,7 @@ nodes = [
         # Endpoint e corpo sao montados em "Preparar Persistencia": sendText para
         # texto puro, sendButtons/sendList para os menus interativos. Assim o menu
         # sai como lista e os submenus como botoes, sem um node por formato.
-        "url": "={{ $env.EVOLUTION_API_URL }}/message/{{ $('Preparar Persistencia').first().json.reply_endpoint }}/{{ $env.EVOLUTION_INSTANCE }}",
+        "url": "={{ $env.EVOLUTION_API_URL }}/message/{{ $('Preparar Persistencia').first().json.reply_endpoint }}/{{ $('Extract Inbound').first().json.instance || $env.EVOLUTION_INSTANCE }}",
         "sendBody": True, "specifyBody": "json",
         "jsonBody": "={{ $('Preparar Persistencia').first().json.reply_payload }}",
         "sendHeaders": True,
@@ -2706,7 +2710,7 @@ nodes = [
 
     {"parameters": {
         "method": "POST",
-        "url": "={{ $env.EVOLUTION_API_URL }}/message/sendText/{{ $env.EVOLUTION_INSTANCE }}",
+        "url": "={{ $env.EVOLUTION_API_URL }}/message/sendText/{{ $('Extract Inbound').first().json.instance || $env.EVOLUTION_INSTANCE }}",
         "sendBody": True, "specifyBody": "json",
         "jsonBody": "={{ JSON.stringify({ number: $('Preparar Persistencia').first().json.phone, text: $('Preparar Persistencia').first().json.pix_code }) }}",
         "sendHeaders": True,
@@ -2730,7 +2734,7 @@ nodes = [
 
     {"parameters": {
         "method": "POST",
-        "url": "={{ $env.EVOLUTION_API_URL }}/message/sendMedia/{{ $env.EVOLUTION_INSTANCE }}",
+        "url": "={{ $env.EVOLUTION_API_URL }}/message/sendMedia/{{ $('Extract Inbound').first().json.instance || $env.EVOLUTION_INSTANCE }}",
         "sendBody": True, "specifyBody": "json",
         "jsonBody": "={{ JSON.stringify({ number: $('Preparar Persistencia').first().json.phone, mediatype: 'document', mimetype: 'application/pdf', fileName: 'Boleto.pdf', media: $('Preparar Persistencia').first().json.boleto_url }) }}",
         "sendHeaders": True,

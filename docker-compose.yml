@@ -199,6 +199,9 @@ services:
       EVOLUTION_API_URL: http://evolution:8080
       EVOLUTION_INSTANCE: ${EVOLUTION_INSTANCE}
       EVOLUTION_API_KEY: ${EVOLUTION_API_KEY}
+      # Instancia do numero de DISPARO. Vazio = usa a mesma do bot. Ao separar
+      # em 2 numeros, aponte para a instancia do 9234 (so faturas).
+      FATURAS_INSTANCE: ${FATURAS_INSTANCE:-}
       FATURAS_ON: ${FATURAS_ON:-false}
       FATURAS_DIAS_ANTES: ${FATURAS_DIAS_ANTES:-15}
       FATURAS_TETO_DIA: ${FATURAS_TETO_DIA:-250}
