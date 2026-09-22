@@ -478,8 +478,10 @@ switch (stepEfetivo) {
         reply_text = menuServico(session.nome);
         next_step = 'menu';
       } else {
-        reply_text = 'Para começar, me informe seu *CPF/CNPJ* (somente números):';
-        next_step = 'awaiting_cpf';
+        // Auto-ID: tenta achar pelo telefone do WhatsApp (sem o 55). Se achar,
+        // entra sem CPF; senao, "Processar Consulta CPF" pede o CPF (plano B).
+        sgp_action = 'lookup_cpf';
+        sgp_payload = { telefone: String(phone).replace(/^55/, '') };
         session_patch = { attempts: 0, intent: 'home' };
       }
     } else if (text === '2') {
@@ -915,6 +917,10 @@ function aposIdentidade(it, contrato, mac, ssidAtual, valorAberto, suspenso, nom
 
 // Resposta do SGP: { msg, contratos: [ ... ] }
 const contratos = Array.isArray(resp && resp.contratos) ? resp.contratos : [];
+// Identificacao veio do TELEFONE (auto-ID do "Ja sou Cliente") e nao do CPF
+// digitado: muda so a mensagem de "nao encontrei" (cai no plano B = pedir CPF).
+const viaTelefone = !!(prev.sgp_payload && prev.sgp_payload.telefone) &&
+                    !(prev.sgp_payload && prev.sgp_payload.cpf);
 // contratoStatus (TSMX): 1=Ativo. Falta de pagamento tem MAIS de um codigo:
 // 4=Suspenso e 7="Ativo V. Reduzida" (throttle, ainda online) - ambos com valor
 // em aberto. ATENDIVEIS = Ativo + os de atraso: o cliente precisa se identificar
@@ -927,8 +933,15 @@ const ativos = contratos
   .sort(function (a, b) { return (a.contratoStatus === 1 ? 0 : 1) - (b.contratoStatus === 1 ? 0 : 1); });
 
 if (contratos.length === 0) {
-  reply_text = 'Não encontrei nenhum contrato com esse CPF/CNPJ. Confira o número ou digite *5* para falar com um atendente.';
-  next_step = 'menu';
+  if (viaTelefone) {
+    // Plano B: nao achou pelo telefone -> pede o CPF, mantendo o intent 'home'.
+    reply_text = 'Não localizei seu cadastro pelo número do WhatsApp.\n\n' +
+      'Para continuar, me informe seu *CPF/CNPJ* (somente números):';
+    next_step = 'awaiting_cpf';
+  } else {
+    reply_text = 'Não encontrei nenhum contrato com esse CPF/CNPJ. Confira o número ou digite *5* para falar com um atendente.';
+    next_step = 'menu';
+  }
 } else if (ativos.length === 0) {
   // Nem ativo nem suspenso: so cancelado/inativo. Nao ha self-service - atendente.
   reply_text = 'Localizei seu cadastro, mas não há contrato ativo no momento. Vou te transferir para um atendente.';
@@ -945,6 +958,9 @@ if (contratos.length === 0) {
   const telefoneBate = telefones.some(function (t) { return last8(t) && last8(t) === last8(prev.phone); });
 
   session_patch.nome = ref.razaoSocial || '';
+  // Identificado por telefone nao tem CPF digitado: guarda o cpf do cadastro
+  // para a auditoria e o reaproveitamento de identidade nao ficarem sem ele.
+  if (!session_patch.cpf && ref.cpfCnpj) session_patch.cpf = String(ref.cpfCnpj).replace(/\D/g, '');
   // servico_mac casa com o phy_addr da ONU - e o plano B para achar o
   // equipamento quando o filtro por contrato nao retorna nada.
   session_patch.mac = ref.servico_mac || ref.servico_mac2 || '';
@@ -2306,7 +2322,7 @@ nodes = [
     {"parameters": {
         "method": "POST", "url": "={{ $env.SGP_API_URL }}/api/ura/consultacliente/",
         "sendBody": True, "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ app: $env.SGP_APP_NAME, token: $env.SGP_API_TOKEN, cpfcnpj: $json.sgp_payload.cpf }) }}",
+        "jsonBody": "={{ JSON.stringify(Object.assign({ app: $env.SGP_APP_NAME, token: $env.SGP_API_TOKEN }, $json.sgp_payload.cpf ? { cpfcnpj: $json.sgp_payload.cpf } : { telefone: $json.sgp_payload.telefone })) }}",
         "options": {"response": {"response": {"neverError": True}}, "timeout": 20000}},
      "id": "http-lookup", "name": "SGP - Consultar Cliente",
      "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2, "position": [1000, -320]},

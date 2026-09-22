@@ -729,6 +729,12 @@ teJa = turn(teJa.sessionRow, CPF, PHONE_OK, RESP, FATURAS);
 if (teJa.step === 'awaiting_contract_choice') teJa = turn(teJa.sessionRow, '1', PHONE_OK, RESP, FATURAS);
 check(teJa.step === 'menu' && /Como posso te ajudar/i.test(teJa.reply),
       'apos identificar -> menu de servico saudando o cliente pelo nome');
+// Auto-ID por telefone: "Ja sou Cliente" + telefone que casa no SGP -> sem CPF.
+let teAuto = turn(null, 'oi', PHONE_OK);
+teAuto = turn(teAuto.sessionRow, '1', PHONE_OK, RESP, FATURAS);
+if (teAuto.step === 'awaiting_contract_choice') teAuto = turn(teAuto.sessionRow, '1', PHONE_OK, RESP, FATURAS);
+check(teAuto.step === 'menu' && /Como posso te ajudar/i.test(teAuto.reply) && teAuto.data.cpf,
+      'auto-ID por telefone: "Ja sou Cliente" identifica sem pedir CPF');
 
 // Roda o diagnostico com uma resp de CPF especifica (nao a global do ateIdentidade)
 function diagDe(resp, diag) {
