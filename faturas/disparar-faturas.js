@@ -49,7 +49,11 @@ const TZ          = process.env.TZ || 'America/Sao_Paulo';
 const ARGS    = process.argv.slice(2);
 const DRY_RUN = ARGS.includes('--dry-run');
 const AGORA   = ARGS.includes('--agora');
-const DAEMON  = ARGS.includes('--daemon') || (!AGORA);
+// --teste <numero>: manda UMA mensagem de fatura para esse numero (o seu), com
+// os dados de uma fatura real, para validar o formato antes de soltar na base.
+const _iT       = ARGS.indexOf('--teste');
+const TESTE_NUM = _iT >= 0 ? String(ARGS[_iT + 1] || '').replace(/\D/g, '') : '';
+const DAEMON  = !AGORA && !TESTE_NUM;
 
 const pool = new Pool({
   host: process.env.POSTGRES_HOST || 'postgres',
@@ -321,9 +325,37 @@ async function rodar() {
   log(`Fim da rodada. Enviados: ${enviados} | sem telefone: ${semTelefone} | falhas: ${falhas}`);
 }
 
+// Manda UMA mensagem de fatura para um numero de teste, com os dados de uma
+// fatura real da janela. Nao grava nada, nao respeita teto, ignora FATURAS_ON.
+async function testeUm(numero) {
+  const hoje = hojeISO();
+  const limite = addDiasISO(hoje, DIAS_ANTES);
+  const titulos = await puxarTitulos();
+  let alvo = null;
+  for (const t of titulos) {
+    if (String(t.status || '').toLowerCase() !== 'aberto') continue;
+    const v = String(t.dataVencimento || '').slice(0, 10);
+    if (!v || v < hoje || v > limite) continue;
+    if (!t.codigoPix || !t.link) continue;
+    alvo = t; break;
+  }
+  if (!alvo) { warn('nenhuma fatura na janela para usar de exemplo'); return; }
+  const venc = isoParaBR(String(alvo.dataVencimento).slice(0, 10));
+  log(`TESTE -> ${numero} | ${alvo.clienteNome} | vence ${venc} | ${brl(alvo.valor)} | template=${TEMPLATE}`);
+  const r = await enviarTemplate(numero, primeiroNome(alvo.clienteNome), venc, brl(alvo.valor), alvo.codigoPix, alvo.link);
+  log('Resposta da Evolution: HTTP', r.status);
+  log(r.txt.slice(0, 500));
+}
+
 // ---- Bootstrap ------------------------------------------------------------
 async function main() {
   await garantirTabela();
+
+  if (TESTE_NUM) {
+    await testeUm(TESTE_NUM).catch((e) => warn('erro no teste:', e.stack || e.message));
+    await pool.end();
+    return;
+  }
 
   if (AGORA) {
     await rodar().catch((e) => warn('erro na rodada:', e.stack || e.message));
