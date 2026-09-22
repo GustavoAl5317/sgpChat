@@ -160,21 +160,31 @@ async function telefoneDoContrato(contrato) {
 }
 
 // ---- Evolution (template) -------------------------------------------------
-async function enviarTemplate(numero, nome, vencBR, valorBRL) {
+// Formato B: cabecalho com o BOLETO em PDF (cliente baixa) + corpo com
+// nome/vencimento/valor e o CODIGO PIX (copia e cola) numa variavel. Assim a
+// mensagem automatica ja traz tudo, sem depender de o cliente tocar em nada.
+async function enviarTemplate(numero, nome, vencBR, valorBRL, pixCode, boletoUrl) {
+  const components = [];
+  if (boletoUrl) {
+    components.push({
+      type: 'header',
+      parameters: [{ type: 'document', document: { link: boletoUrl, filename: 'Fatura.pdf' } }],
+    });
+  }
+  components.push({
+    type: 'body',
+    parameters: [
+      { type: 'text', text: nome },
+      { type: 'text', text: vencBR },
+      { type: 'text', text: valorBRL },
+      { type: 'text', text: String(pixCode || '').replace(/\s+/g, '') },
+    ],
+  });
   const body = {
     number: numero,
     name: TEMPLATE,
     language: TEMPLATE_LG,
-    components: [
-      {
-        type: 'body',
-        parameters: [
-          { type: 'text', text: nome },
-          { type: 'text', text: vencBR },
-          { type: 'text', text: valorBRL },
-        ],
-      },
-    ],
+    components,
   };
   const resp = await fetch(`${EVO_URL}/message/sendTemplate/${EVO_INST}`, {
     method: 'POST',
@@ -270,6 +280,7 @@ async function rodar() {
     cand.push({
       contrato, doc, venc, valor: t.valor,
       cpf: t.clienteCpfcnpj, nome: t.clienteNome,
+      pix: t.codigoPix || '', boleto: t.link || '',
     });
   }
   // Prioriza quem vence primeiro (mais urgente sob o teto diario).
@@ -287,11 +298,11 @@ async function rodar() {
       continue;
     }
     if (DRY_RUN) {
-      log(`[dry] -> ${numero} | ${primeiroNome(t.nome)} | vence ${isoParaBR(t.venc)} | ${brl(t.valor)}`);
+      log(`[dry] -> ${numero} | ${primeiroNome(t.nome)} | vence ${isoParaBR(t.venc)} | ${brl(t.valor)} | pix:${t.pix ? 'sim' : 'nao'} | boleto:${t.boleto ? 'sim' : 'nao'}`);
       enviados++;
       continue;
     }
-    const r = await enviarTemplate(numero, primeiroNome(t.nome), isoParaBR(t.venc), brl(t.valor));
+    const r = await enviarTemplate(numero, primeiroNome(t.nome), isoParaBR(t.venc), brl(t.valor), t.pix, t.boleto);
     if (!r.ok) {
       falhas++;
       warn(`falha ao enviar contrato ${t.contrato} -> ${numero}: HTTP ${r.status} ${r.txt.slice(0, 200)}`);
