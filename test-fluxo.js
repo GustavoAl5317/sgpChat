@@ -721,8 +721,11 @@ const teNovo = turn(null, 'oi', PHONE_OK);
 check(teNovo.step === 'entry' && /Já sou Cliente/.test(teNovo.reply) && /Quero ser Cliente/.test(teNovo.reply),
       'primeiro contato -> menu de entrada (cliente x nao-cliente)');
 const teQuero = turn(teNovo.sessionRow, '2', PHONE_OK);
-check(/300 Mega/.test(teQuero.reply) && /precadastro/.test(teQuero.reply) && teQuero.endpoint === 'sendText',
-      '"Quero ser Cliente" -> planos + link de pre-cadastro (texto, link clicavel)');
+check(teQuero.step === 'planos' && /300 Mega/.test(teQuero.reply) && teQuero.endpoint === 'sendList',
+      '"Quero ser Cliente" -> lista de planos para o cliente escolher');
+const tPlano = turn(teQuero.sessionRow, '2', PHONE_OK);
+check(/600 Mega/.test(tPlano.reply) && /precadastro/.test(tPlano.reply) && tPlano.endpoint === 'sendText',
+      'escolher um plano -> confirma o plano + link de pre-cadastro (clicavel)');
 let teJa = turn(teNovo.sessionRow, '1', PHONE_OK);
 check(teJa.step === 'awaiting_cpf', '"Ja sou Cliente" sem identidade -> pede CPF uma vez');
 teJa = turn(teJa.sessionRow, CPF, PHONE_OK, RESP, FATURAS);

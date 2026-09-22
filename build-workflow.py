@@ -203,20 +203,29 @@ const MENU_ENTRY =
   '*1* - Já sou Cliente\n' +
   '*2* - Quero ser Cliente';
 
-// Fluxo comercial (nao-cliente). O link vai em mensagem de TEXTO (nao em lista),
-// para ficar clicavel; por isso o fecho evita "digite menu" (que viraria lista).
+// Fluxo comercial (nao-cliente): o cliente ESCOLHE o plano (lista), o bot
+// confirma e manda o link do pre-cadastro (texto, clicavel).
+const PLANOS_LISTA = [
+  { id: '1', nome: '300 Mega',  valor: 'R$ 59,99' },
+  { id: '2', nome: '600 Mega',  valor: 'R$ 79,99' },
+  { id: '3', nome: '700 Mega',  valor: 'R$ 89,99' },
+  { id: '4', nome: '1000 Mega', valor: 'R$ 99,99' },
+];
 const PLANOS =
   '🚀 *Planos RCNet* — 5% de desconto na pontualidade:\n\n' +
-  '*300 Mega* — R$ 59,99\n' +
-  '*600 Mega* — R$ 79,99\n' +
-  '*700 Mega* — R$ 89,99\n' +
-  '*1000 Mega* — R$ 99,99\n\n' +
-  '💰 *Taxa de instalação:*\n' +
-  '• Residência própria ou contrato de 12 meses: R$ 50,00\n' +
-  '• Kitnet: R$ 100,00\n\n' +
-  '📝 Faça seu pré-cadastro que nosso comercial entra em contato:\n' +
-  'https://rcnet.sgp.tsmx.app/public/precadastro/F\n\n' +
-  '_Quando quiser, é só mandar *menu*._';
+  PLANOS_LISTA.map(function (p) { return '*' + p.id + '* - ' + p.nome + ' — ' + p.valor; }).join('\n') +
+  '\n\n💰 *Taxa de instalação:* R$ 50,00 (residência própria ou contrato de 12 ' +
+  'meses) · R$ 100,00 (kitnet).\n\n' +
+  '*Qual plano te interessa?* (responda o número)';
+const PRECADASTRO_LINK = 'https://rcnet.sgp.tsmx.app/public/precadastro/F';
+function respostaPlano(id) {
+  const p = PLANOS_LISTA.filter(function (x) { return x.id === id; })[0];
+  if (!p) return null;
+  return 'Ótimo, você escolheu o *' + p.nome + '* (' + p.valor + ')! 🎉\n\n' +
+    'Para finalizar, faça seu *pré-cadastro* aqui que nosso comercial entra em contato:\n' +
+    PRECADASTRO_LINK + '\n\n' +
+    '_Quando quiser, é só mandar *menu*._';
+}
 
 // Identidade validada vale por uma janela curta. O cliente costuma resolver
 // duas coisas na mesma conversa (ver o boleto e depois abrir um chamado), e
@@ -485,13 +494,21 @@ switch (stepEfetivo) {
         session_patch = { attempts: 0, intent: 'home' };
       }
     } else if (text === '2') {
-      // "Quero ser Cliente": planos + link de pre-cadastro (texto, link clicavel).
+      // "Quero ser Cliente": mostra os planos (lista) para o cliente escolher.
       reply_text = PLANOS;
-      next_step = 'entry';
+      next_step = 'planos';
     } else {
       reply_text = MENU_ENTRY;
       next_step = 'entry';
     }
+    break;
+  }
+
+  case 'planos': {
+    // Cliente escolheu um plano (1-4): confirma e manda o link do pre-cadastro.
+    const rp = respostaPlano(text);
+    if (rp) { reply_text = rp; next_step = 'entry'; }
+    else { reply_text = PLANOS; next_step = 'planos'; }
     break;
   }
 
@@ -2138,6 +2155,11 @@ if (/Já sou Cliente/i.test(_t) && /Quero ser Cliente/i.test(_t)) {
   _lista('RCNet', 'Começar',
     [_row('1', 'Já sou Cliente', 'Atendimento, 2ª via, suporte'),
      _row('2', 'Quero ser Cliente', 'Ver planos e assinar')]);
+} else if (/Planos RCNet/i.test(_t) && /Qual plano/i.test(_t)) {
+  // Planos como lista: o cliente TOCA no plano -> confirma + link.
+  _lista('Planos RCNet', 'Escolher plano',
+    [_row('1', '300 Mega', 'R$ 59,99'), _row('2', '600 Mega', 'R$ 79,99'),
+     _row('3', '700 Mega', 'R$ 89,99'), _row('4', '1000 Mega', 'R$ 99,99')]);
 } else if (/2ª via de boleto/i.test(_t) && /Diagnóstico da minha conexão/i.test(_t)) {
   // Menu de servico (generico "Olá! Sou o atendimento..." ou saudando pelo nome).
   const nome = {'1':'Wi-Fi','2':'2ª via de boleto','3':'Abrir chamado','4':'Diagnóstico','5':'Falar com atendente'};
