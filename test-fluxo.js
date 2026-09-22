@@ -726,6 +726,8 @@ check(teQuero.step === 'planos' && /300 Mega/.test(teQuero.reply) && teQuero.end
 const tPlano = turn(teQuero.sessionRow, '2', PHONE_OK);
 check(/600 Mega/.test(tPlano.reply) && /precadastro/.test(tPlano.reply) && tPlano.endpoint === 'sendText',
       'escolher um plano -> confirma o plano + link de pre-cadastro (clicavel)');
+check(tPlano.step === 'human_handoff',
+      'escolher um plano -> encaminha para o atendente (comercial)');
 let teJa = turn(teNovo.sessionRow, '1', PHONE_OK);
 check(teJa.step === 'awaiting_cpf', '"Ja sou Cliente" sem identidade -> pede CPF uma vez');
 teJa = turn(teJa.sessionRow, CPF, PHONE_OK, RESP, FATURAS);

@@ -222,9 +222,9 @@ function respostaPlano(id) {
   const p = PLANOS_LISTA.filter(function (x) { return x.id === id; })[0];
   if (!p) return null;
   return 'Ótimo, você escolheu o *' + p.nome + '* (' + p.valor + ')! 🎉\n\n' +
-    'Para finalizar, faça seu *pré-cadastro* aqui que nosso comercial entra em contato:\n' +
-    PRECADASTRO_LINK + '\n\n' +
-    '_Quando quiser, é só mandar *menu*._';
+    'Faça seu *pré-cadastro* aqui:\n' + PRECADASTRO_LINK + '\n\n' +
+    'Já estou te encaminhando para um *atendente do comercial* para finalizar ' +
+    'o seu pedido. É só aguardar aqui. 👍';
 }
 
 // Identidade validada vale por uma janela curta. O cliente costuma resolver
@@ -505,9 +505,10 @@ switch (stepEfetivo) {
   }
 
   case 'planos': {
-    // Cliente escolheu um plano (1-4): confirma e manda o link do pre-cadastro.
+    // Cliente escolheu um plano (1-4): confirma, manda o link e ENCAMINHA para
+    // o atendente (comercial) - o lead entra na fila de atendimento humano.
     const rp = respostaPlano(text);
-    if (rp) { reply_text = rp; next_step = 'entry'; }
+    if (rp) { reply_text = rp; next_step = 'human_handoff'; }
     else { reply_text = PLANOS; next_step = 'planos'; }
     break;
   }
