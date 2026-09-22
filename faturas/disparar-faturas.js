@@ -251,9 +251,12 @@ async function preSemearSessao(phone, cpf, contrato) {
 
 // ---- Rodada ---------------------------------------------------------------
 async function rodar() {
-  if (!ON) {
+  // FATURAS_ON=false desliga o ENVIO real, mas o --dry-run (que nao envia nada)
+  // roda mesmo assim, para dar para validar a lista/PIX/boleto antes de ligar.
+  if (!ON && !DRY_RUN) {
     log('FATURAS_ON=false - disparo desligado. Nada a fazer.',
-      '(ligue depois de migrar para o Cloud API e o template ser aprovado.)');
+      '(ligue depois de migrar para o Cloud API e o template ser aprovado.)',
+      'Para so conferir a lista sem enviar: rode com --agora --dry-run.');
     return;
   }
   if (!SGP_URL || !SGP_TOKEN || !SGP_APP) { warn('faltam credenciais do SGP no .env'); return; }
