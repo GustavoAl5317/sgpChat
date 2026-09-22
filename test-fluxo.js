@@ -740,6 +740,15 @@ teAuto = turn(teAuto.sessionRow, '1', PHONE_OK, RESP, FATURAS);
 if (teAuto.step === 'awaiting_contract_choice') teAuto = turn(teAuto.sessionRow, '1', PHONE_OK, RESP, FATURAS);
 check(teAuto.step === 'menu' && /Como posso te ajudar/i.test(teAuto.reply) && teAuto.data.cpf,
       'auto-ID por telefone: "Ja sou Cliente" identifica sem pedir CPF');
+// Dois numeros: a instancia de DISPATCH so avisa (redireciona), nao roda o agente.
+ENV = { DISPATCH_INSTANCE: 'principal' };
+const rDisp = run('Parse & Route', [], { 'Extract Inbound': run('Extract Inbound', [payload('oi', PHONE_OK)], {}) });
+check(/exclusivo para o envio de faturas/i.test(rDisp.reply_text) && /99325-2562/.test(rDisp.reply_text),
+      'numero de disparo -> aviso de redirecionamento (nao o menu)');
+const rAg = run('Parse & Route', [], { 'Extract Inbound': run('Extract Inbound', [payload('oi', PHONE_OK, { instance: 'agente' })], {}) });
+check(/Já sou Cliente/.test(rAg.reply_text),
+      'numero do agente (outra instancia) -> menu de entrada normal');
+ENV = {};
 
 // Roda o diagnostico com uma resp de CPF especifica (nao a global do ateIdentidade)
 function diagDe(resp, diag) {

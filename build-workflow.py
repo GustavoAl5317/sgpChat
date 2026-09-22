@@ -454,6 +454,19 @@ let session_patch = {};
 let sgp_action = 'none';
 let sgp_payload = {};
 
+// Numero exclusivo de DISPARO de fatura (ex.: 9234): NAO roda o agente. Quem
+// mandar mensagem nele recebe um aviso redirecionando para o atendimento. Qual
+// instancia e "so disparo" vem de DISPATCH_INSTANCE (vazio = todos sao agente).
+const DISPATCH_INSTANCE = String($env.DISPATCH_INSTANCE || '').trim();
+if (DISPATCH_INSTANCE && inbound.instance === DISPATCH_INSTANCE) {
+  const aviso = String($env.DISPATCH_MSG || '').trim() ||
+    ('Este número é exclusivo para o envio de faturas. 🤖\n\n' +
+     'Para atendimento, chame a gente no *(92) 99325-2562*. 💬');
+  return [{ json: { phone, text, step, session,
+    reply_text: aviso, next_step: 'entry',
+    session_patch: {}, sgp_action: 'none', sgp_payload: {} } }];
+}
+
 // "menu" digitado a qualquer momento reinicia o atendimento - inclusive
 // estando ja no menu. Parece redundante (a resposta e a mesma), mas nao e:
 // desde que a identidade validada sobrevive entre modulos, "sair" precisa

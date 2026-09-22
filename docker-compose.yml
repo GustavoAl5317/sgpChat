@@ -102,6 +102,11 @@ services:
       EVOLUTION_API_URL: http://evolution:8080
       EVOLUTION_INSTANCE: ${EVOLUTION_INSTANCE}
       EVOLUTION_API_KEY: ${EVOLUTION_API_KEY}
+      # Instancia que e SO disparo de fatura (nao roda o agente): quem mandar
+      # mensagem nela recebe um aviso redirecionando para o atendimento. Vazio =
+      # todos os numeros sao agente. DISPATCH_MSG sobrescreve o texto do aviso.
+      DISPATCH_INSTANCE: ${DISPATCH_INSTANCE:-}
+      DISPATCH_MSG: ${DISPATCH_MSG:-}
     volumes:
       - n8n_data:/home/node/.n8n
     # Duas redes: a interna (fala com Postgres/Evolution) e a do Traefik,
