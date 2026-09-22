@@ -199,11 +199,14 @@ const FATURAS_MIX = { status: 1, razaoSocial: 'MARIA', links: [
 
 function ateIdentidade(opcaoMenu, phone, diag) {
   let s = null;
-  let t = turn(s, opcaoMenu, phone); s = t.sessionRow;
+  // Menu de entrada -> "Ja sou Cliente" (1) -> pede CPF -> menu de servico.
+  let t = turn(s, '1', phone); s = t.sessionRow;
   t = turn(s, CPF, phone, RESP, FATURAS, diag); s = t.sessionRow;
   if (t.step === 'awaiting_contract_choice') {
     t = turn(s, '1', phone, RESP, FATURAS, diag); s = t.sessionRow;
   }
+  // Ja identificado e no menu de servico: escolhe a opcao desejada.
+  t = turn(s, opcaoMenu, phone, RESP, FATURAS, diag); s = t.sessionRow;
   return { t, s };
 }
 
@@ -301,7 +304,7 @@ q = turn({ step: 'human_handoff', data: '{}' }, '2', PHONE_OK);
 check(q.step !== 'human_handoff', 'na fila, digitar 2 -> sai da fila e trata como opcao do menu');
 
 q = turn({ step: 'human_handoff', data: '{}' }, 'menu', PHONE_OK);
-check(q.step === 'menu', 'na fila, "menu" volta ao inicio');
+check(q.step === 'entry', 'na fila, "menu" (sem identidade) volta ao menu de entrada');
 
 // ========================= MODULO 2: Financeiro =========================
 // ================= Identidade reaproveitada (janela de 15 min) =================
@@ -444,10 +447,11 @@ check(t.step === 'human_handoff', '3 CPFs invalidos -> atendente');
 
 // So CPF, de numero fora do cadastro, ja libera o modulo escolhido.
 let scpf = null;
-t = turn(scpf, '3', PHONE_OUTRO); scpf = t.sessionRow;
+t = turn(scpf, '1', PHONE_OUTRO); scpf = t.sessionRow;
 t = turn(scpf, CPF, PHONE_OUTRO, RESP, FATURAS); scpf = t.sessionRow;
 if (t.step === 'awaiting_contract_choice') { t = turn(scpf, '1', PHONE_OUTRO, RESP, FATURAS); scpf = t.sessionRow; }
-check(t.step === 'awaiting_support_desc', 'so CPF respeita o modulo escolhido (suporte)');
+t = turn(scpf, '3', PHONE_OUTRO, RESP, FATURAS); scpf = t.sessionRow;
+check(t.step === 'awaiting_support_desc', 'apos identidade, opcao 3 (suporte) pede a descricao');
 
 t = turn({ step: 'awaiting_cpf', data: '{}' }, CPF, PHONE_OK, { msg: 'x', contratos: [] });
 check(t.step === 'menu', 'CPF sem contrato -> volta ao menu');
@@ -680,12 +684,15 @@ const tbtnSemId = turn({ step: 'menu', data: JSON.stringify({}) }, 'Pagar minha 
 check(tbtnSemId.step === 'awaiting_cpf',
       'botao "Pagar minha fatura" sem sessao fresca -> pede CPF');
 
-// Apresentacao interativa (Cloud API): menu vira LISTA, submenus viram BOTOES.
-const tmenu = turn(null, 'oi', PHONE_OK);
-check(tmenu.endpoint === 'sendList' && /"rowId":"2"/.test(tmenu.payload),
-      'menu principal -> lista interativa (com rowId das opcoes)');
-check(/Digite o número da opção/.test(tmenu.reply),
-      'texto numerado do menu vai junto (fallback de quem nao ve a lista)');
+// Apresentacao interativa (Cloud API): tudo vira LISTA (corpo + opcoes).
+const tentry = turn(null, 'oi', PHONE_OK);
+check(tentry.endpoint === 'sendList' && /Já sou Cliente/.test(tentry.payload) && /Quero ser Cliente/.test(tentry.payload),
+      'primeiro contato -> menu de entrada (Ja sou / Quero ser cliente)');
+const tmenu = turn(sessaoValidada(60 * 1000), 'menu', PHONE_OK);
+check(tmenu.endpoint === 'sendList' && /2ª via de boleto/.test(tmenu.payload),
+      'menu de servico -> lista interativa (com as opcoes)');
+check(/Escolha uma opção/.test(tmenu.reply),
+      'texto do menu vai junto (fallback de quem nao ve a lista)');
 const treg = turn({ step: 'regularizar', data: JSON.stringify({ contrato: 42, cpf: '12345678909', verified_at: Date.now(), suspenso: true }) },
                   'x', PHONE_OK);
 check(treg.endpoint === 'sendList' && /Pagar agora/.test(treg.payload) && /falta de pagamento/.test(treg.payload),
@@ -709,12 +716,27 @@ const tbtnpick = turn({ step: 'regularizar', data: JSON.stringify({ contrato: 42
 check(tbtnpick.step === 'human_handoff',
       'toque no botao ("3 - Atendente") roteia como opcao 3');
 
+// --- Menu de entrada: cliente x nao-cliente ---
+const teNovo = turn(null, 'oi', PHONE_OK);
+check(teNovo.step === 'entry' && /Já sou Cliente/.test(teNovo.reply) && /Quero ser Cliente/.test(teNovo.reply),
+      'primeiro contato -> menu de entrada (cliente x nao-cliente)');
+const teQuero = turn(teNovo.sessionRow, '2', PHONE_OK);
+check(/300 Mega/.test(teQuero.reply) && /precadastro/.test(teQuero.reply) && teQuero.endpoint === 'sendText',
+      '"Quero ser Cliente" -> planos + link de pre-cadastro (texto, link clicavel)');
+let teJa = turn(teNovo.sessionRow, '1', PHONE_OK);
+check(teJa.step === 'awaiting_cpf', '"Ja sou Cliente" sem identidade -> pede CPF uma vez');
+teJa = turn(teJa.sessionRow, CPF, PHONE_OK, RESP, FATURAS);
+if (teJa.step === 'awaiting_contract_choice') teJa = turn(teJa.sessionRow, '1', PHONE_OK, RESP, FATURAS);
+check(teJa.step === 'menu' && /Como posso te ajudar/i.test(teJa.reply),
+      'apos identificar -> menu de servico saudando o cliente pelo nome');
+
 // Roda o diagnostico com uma resp de CPF especifica (nao a global do ateIdentidade)
 function diagDe(resp, diag) {
   let s = null;
-  let t = turn(s, '4', PHONE_OK); s = t.sessionRow;
-  t = turn(s, CPF, PHONE_OK, resp, FATURAS, diag); s = t.sessionRow;
-  if (t.step === 'awaiting_contract_choice') t = turn(s, '1', PHONE_OK, resp, FATURAS, diag);
+  let t = turn(s, '1', PHONE_OK); s = t.sessionRow;              // entry: Ja sou cliente
+  t = turn(s, CPF, PHONE_OK, resp, FATURAS, diag); s = t.sessionRow;  // CPF -> menu
+  if (t.step === 'awaiting_contract_choice') { t = turn(s, '1', PHONE_OK, resp, FATURAS, diag); s = t.sessionRow; }
+  t = turn(s, '4', PHONE_OK, resp, FATURAS, diag);               // menu -> diagnostico
   return t;
 }
 
@@ -742,8 +764,8 @@ check(!/falta de pagamento/i.test(tsemdiv.reply), 'sem valor em aberto -> diagno
 console.log('\n=== Wi-Fi desligado por configuracao ===');
 ENV = { WIFI_MODO: 'off' };
 
-let td = turn(null, 'oi', PHONE_OK);
-check(!/Alterar nome\/senha do Wi-Fi/.test(td.reply), 'opcao de Wi-Fi sai do menu');
+let td = turn(sessaoValidada(60 * 1000), 'menu', PHONE_OK);
+check(!/Alterar nome\/senha do Wi-Fi/.test(td.reply) && !/Alterar a senha do Wi-Fi/.test(td.reply), 'opcao de Wi-Fi sai do menu');
 check(/2ª via de boleto/.test(td.reply) && /Diagnóstico/.test(td.reply),
       'as outras opcoes continuam no menu');
 check(/\*2\*/.test(td.reply) && /\*5\*/.test(td.reply),
@@ -751,13 +773,13 @@ check(/\*2\*/.test(td.reply) && /\*5\*/.test(td.reply),
 
 // Quem responde olhando uma mensagem antiga ainda digita 1. Nao pode receber
 // o menu de novo sem explicacao, nem entrar num fluxo que vai falhar.
-td = turn(null, '1', PHONE_OK);
+td = turn(sessaoValidada(60 * 1000), '1', PHONE_OK);
 check(td.step === 'menu' && !/CPF/i.test(td.reply), 'digitar 1 nao inicia o fluxo de Wi-Fi');
 check(/atendente/i.test(td.reply), 'digitar 1 explica e aponta para o atendente');
 
-// As outras opcoes seguem funcionando normalmente
-td = turn(null, '2', PHONE_OK);
-check(td.step === 'awaiting_cpf', 'boleto continua funcionando com o Wi-Fi desligado');
+// As outras opcoes seguem funcionando normalmente (cliente ja identificado)
+td = turn(sessaoValidada(60 * 1000), '2', PHONE_OK, RESP, FATURAS);
+check(td.step === 'menu' && (/boleto/i.test(td.reply) || td.boleto), 'boleto continua funcionando com o Wi-Fi desligado');
 
 // ============ Wi-Fi por chamado (provedor sem ACS, mas quer atender) ============
 // Sem ACS a alternativa real nao era "esperar": era o cliente ligar para o
@@ -1191,7 +1213,7 @@ ENV = { WIFI_MODO: 'olt' };
 console.log('\n=== So a senha ===');
 ENV = { WIFI_MODO: 'olt', WIFI_PERMITE_NOME: 'false' };
 
-let ts = turn(null, 'oi', PHONE_OK);
+let ts = turn(sessaoValidada(60 * 1000), 'menu', PHONE_OK);
 check(/Alterar a senha do Wi-Fi/.test(ts.reply), 'menu oferece so a senha');
 check(!/nome\/senha/.test(ts.reply), 'menu nao promete o que nao faz');
 
@@ -1217,7 +1239,7 @@ check(/Senha:/.test(rs.reply) && !/Nome:/.test(rs.reply),
 
 // Sem a variavel, o comportamento e o de sempre
 ENV = { WIFI_MODO: 'olt' };
-ts = turn(null, 'oi', PHONE_OK);
+ts = turn(sessaoValidada(60 * 1000), 'menu', PHONE_OK);
 check(/Alterar nome\/senha do Wi-Fi/.test(ts.reply),
       'sem a variavel, a troca de nome continua no menu');
 as = ateIdentidade('1', PHONE_OK);
@@ -1246,7 +1268,7 @@ check(!mm.olt_onu && mm.olt_falha === 'onu_nao_encontrada',
 
 
 ENV = {};
-td = turn(null, 'oi', PHONE_OK);
+td = turn(sessaoValidada(60 * 1000), 'menu', PHONE_OK);
 check(/Alterar nome\/senha do Wi-Fi/.test(td.reply), 'sem a variavel, o padrao e aplicar pelo ACS');
 
 

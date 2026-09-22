@@ -70,7 +70,8 @@ JS_PARSE_ROUTE = r"""
 const inbound = $('Extract Inbound').first().json;
 const rows = $input.all();
 const sessionRow = rows.length ? rows[0].json : null;
-const step = (sessionRow && sessionRow.step) || 'menu';
+// Cliente novo (sem sessao) cai no menu de ENTRADA (cliente x nao-cliente).
+const step = (sessionRow && sessionRow.step) || 'entry';
 const session = sessionRow && sessionRow.data
   ? (typeof sessionRow.data === 'string' ? JSON.parse(sessionRow.data) : sessionRow.data)
   : {};
@@ -173,14 +174,49 @@ const WIFI_ON = WIFI_MODO !== 'off';
 // comum e nao tem essa restricao.
 const WIFI_NOME_ON = String($env.WIFI_PERMITE_NOME || 'true').trim().toLowerCase() !== 'false';
 
-const MENU = 'Olá! Sou o atendimento automático.\n\n' +
+// Opcoes do menu de servico (cliente ja identificado). Separado da saudacao
+// para dar para personalizar com o nome do cliente sem duplicar a lista.
+const MENU_OPCOES =
   (WIFI_ON ? (WIFI_NOME_ON ? '*1* - Alterar nome/senha do Wi-Fi\n'
                            : '*1* - Alterar a senha do Wi-Fi\n') : '') +
   '*2* - 2ª via de boleto\n' +
   '*3* - Abrir chamado de suporte\n' +
   '*4* - Diagnóstico da minha conexão\n' +
   '*5* - Falar com atendente\n\n' +
-  'Digite o número da opção desejada.';
+  'Escolha uma opção.';
+const MENU = 'Olá! Sou o atendimento automático.\n\n' + MENU_OPCOES;
+// Menu de servico saudando o cliente pelo primeiro nome (tratamento pessoal).
+function primeiroNome(n) {
+  const p = String(n || '').trim().split(/\s+/)[0] || '';
+  return p ? (p.charAt(0).toUpperCase() + p.slice(1).toLowerCase()) : '';
+}
+function menuServico(nome) {
+  const p = primeiroNome(nome);
+  return (p ? ('Olá, ' + p + '! 👋 Como posso te ajudar?') : 'Olá! Como posso te ajudar?') +
+         '\n\n' + MENU_OPCOES;
+}
+
+// Menu de entrada (primeiro contato): cliente x nao-cliente.
+const MENU_ENTRY =
+  'Olá! 👋 Bem-vindo(a) à *RCNet*.\n\n' +
+  'Como posso te ajudar?\n\n' +
+  '*1* - Já sou Cliente\n' +
+  '*2* - Quero ser Cliente';
+
+// Fluxo comercial (nao-cliente). O link vai em mensagem de TEXTO (nao em lista),
+// para ficar clicavel; por isso o fecho evita "digite menu" (que viraria lista).
+const PLANOS =
+  '🚀 *Planos RCNet* — 5% de desconto na pontualidade:\n\n' +
+  '*300 Mega* — R$ 59,99\n' +
+  '*600 Mega* — R$ 79,99\n' +
+  '*700 Mega* — R$ 89,99\n' +
+  '*1000 Mega* — R$ 99,99\n\n' +
+  '💰 *Taxa de instalação:*\n' +
+  '• Residência própria ou contrato de 12 meses: R$ 50,00\n' +
+  '• Kitnet: R$ 100,00\n\n' +
+  '📝 Faça seu pré-cadastro que nosso comercial entra em contato:\n' +
+  'https://rcnet.sgp.tsmx.app/public/precadastro/F\n\n' +
+  '_Quando quiser, é só mandar *menu*._';
 
 // Identidade validada vale por uma janela curta. O cliente costuma resolver
 // duas coisas na mesma conversa (ver o boleto e depois abrir um chamado), e
@@ -369,6 +405,12 @@ function aposIdentidade(intent, s) {
     return { sgp_action: 'none', next_step: 'regularizar', sgp_payload: {},
              reply_text: MENU_REGULARIZAR };
   }
+  // "home": cliente disse "Já sou Cliente" e se identificou - mostra o menu de
+  // servico ja saudando pelo nome, sem entrar em nenhum modulo.
+  if (intent === 'home') {
+    return { sgp_action: 'none', next_step: 'menu', sgp_payload: {},
+             reply_text: menuServico(s.nome) };
+  }
   if (intent === 'financeiro') {
     return { sgp_action: 'segunda_via', next_step: 'menu', reply_text: null,
              sgp_payload: { contrato: s.contrato } };
@@ -404,18 +446,21 @@ let sgp_payload = {};
 // desde que a identidade validada sobrevive entre modulos, "sair" precisa
 // ser um jeito explicito de encerrar. Sem isso, quem digita "sair" achando
 // que fechou o atendimento deixa a sessao autenticada aberta na janela.
-// "sair" encerra o atendimento e ESQUECE a identidade (logout explicito).
+// "sair" encerra o atendimento e ESQUECE a identidade -> volta ao menu de
+// entrada (Ja sou cliente / Quero ser cliente).
 if (/^sair$/i.test(text)) {
   return [{ json: { phone, text, step, session,
-    reply_text: MENU, next_step: 'menu',
+    reply_text: MENU_ENTRY, next_step: 'entry',
     session_patch: { reset: true }, sgp_action: 'none', sgp_payload: {} } }];
 }
-// "menu"/"voltar"/"inicio"/"0" (inclui o botao "Voltar ao menu") so voltam ao
-// menu MANTENDO a identidade por 8h - o cliente resolve outra coisa sem repetir
-// o CPF. soft_reset limpa os dados da etapa e preserva cpf/contrato/verified_at.
+// "menu"/"voltar"/"inicio"/"0" (inclui o botao "Voltar ao menu"): se ja esta
+// identificado, volta ao menu de SERVICO (saudando pelo nome); senao, ao menu de
+// ENTRADA. soft_reset limpa os dados da etapa e preserva a identidade por 8h.
 if (/^(menu|voltar|inicio|0)$/i.test(text)) {
+  const idOk = identidadeFresca(session);
   return [{ json: { phone, text, step, session,
-    reply_text: MENU, next_step: 'menu',
+    reply_text: idOk ? menuServico(session.nome) : MENU_ENTRY,
+    next_step: idOk ? 'menu' : 'entry',
     session_patch: { soft_reset: true }, sgp_action: 'none', sgp_payload: {} } }];
 }
 
@@ -425,6 +470,29 @@ let stepEfetivo = step;
 if (step === 'human_handoff' && /^[1-5]$/.test(text)) stepEfetivo = 'menu';
 
 switch (stepEfetivo) {
+  case 'entry': {
+    if (text === '1') {
+      // "Ja sou Cliente": se ja identificado (8h), vai direto ao menu de
+      // servico; senao, pede o CPF UMA vez (intent 'home' -> menu apos ID).
+      if (identidadeFresca(session)) {
+        reply_text = menuServico(session.nome);
+        next_step = 'menu';
+      } else {
+        reply_text = 'Para começar, me informe seu *CPF/CNPJ* (somente números):';
+        next_step = 'awaiting_cpf';
+        session_patch = { attempts: 0, intent: 'home' };
+      }
+    } else if (text === '2') {
+      // "Quero ser Cliente": planos + link de pre-cadastro (texto, link clicavel).
+      reply_text = PLANOS;
+      next_step = 'entry';
+    } else {
+      reply_text = MENU_ENTRY;
+      next_step = 'entry';
+    }
+    break;
+  }
+
   case 'menu': {
     // Os numeros das outras opcoes nao mudam quando o Wi-Fi sai: cliente
     // costuma responder olhando uma mensagem antiga da conversa, e renumerar
@@ -779,6 +847,27 @@ function confirmarWifi(ssid, senha, modo) {
 
 // Este node roda separado do Parse & Route e nao enxerga as constantes de la.
 const WIFI_NOME_ON = String($env.WIFI_PERMITE_NOME || 'true').trim().toLowerCase() !== 'false';
+const WIFI_ON = String($env.WIFI_MODO || 'acs').trim().toLowerCase() !== 'off';
+
+// Menu de servico (identico ao do Parse & Route), para saudar pelo nome apos o
+// cliente se identificar via "Ja sou Cliente" (intent 'home').
+const MENU_OPCOES =
+  (WIFI_ON ? (WIFI_NOME_ON ? '*1* - Alterar nome/senha do Wi-Fi\n'
+                           : '*1* - Alterar a senha do Wi-Fi\n') : '') +
+  '*2* - 2ª via de boleto\n' +
+  '*3* - Abrir chamado de suporte\n' +
+  '*4* - Diagnóstico da minha conexão\n' +
+  '*5* - Falar com atendente\n\n' +
+  'Escolha uma opção.';
+function primeiroNome(n) {
+  const p = String(n || '').trim().split(/\s+/)[0] || '';
+  return p ? (p.charAt(0).toUpperCase() + p.slice(1).toLowerCase()) : '';
+}
+function menuServico(nome) {
+  const p = primeiroNome(nome);
+  return (p ? ('Olá, ' + p + '! 👋 Como posso te ajudar?') : 'Olá! Como posso te ajudar?') +
+         '\n\n' + MENU_OPCOES;
+}
 
 // Submenu de regularizacao, reaproveitado onde o cliente esta suspenso.
 const MENU_REGULARIZAR =
@@ -789,12 +878,17 @@ const MENU_REGULARIZAR =
   '*3* - Falar com um atendente\n\n' +
   '_Assim que o pagamento é identificado, o acesso normaliza automaticamente._';
 
-function aposIdentidade(it, contrato, mac, ssidAtual, valorAberto, suspenso) {
+function aposIdentidade(it, contrato, mac, ssidAtual, valorAberto, suspenso, nome) {
   // Suspenso (falta de pagamento): a prioridade e regularizar. So o financeiro
   // segue direto (boleto/PIX); qualquer outra opcao cai no submenu de regularizar.
   if (suspenso && it !== 'financeiro') {
     return { sgp_action: 'none', next_step: 'regularizar', sgp_payload: {},
              reply_text: MENU_REGULARIZAR };
+  }
+  // "home": veio de "Ja sou Cliente" -> mostra o menu de servico com o nome.
+  if (it === 'home') {
+    return { sgp_action: 'none', next_step: 'menu', sgp_payload: {},
+             reply_text: menuServico(nome) };
   }
   if (it === 'financeiro') {
     return { sgp_action: 'segunda_via', next_step: 'menu', reply_text: null,
@@ -894,7 +988,7 @@ if (contratos.length === 0) {
     session_patch.verified_at = Date.now();
     const d = aposIdentidade(intent, ref.contratoId, session_patch.mac,
                              session_patch.wifi_ssid_atual, session_patch.valor_aberto,
-                             refSuspenso);
+                             refSuspenso, ref.razaoSocial);
     reply_text = d.reply_text;
     next_step = d.next_step;
     sgp_action = d.sgp_action;
@@ -2024,7 +2118,12 @@ function _lista(titulo, botao, rows, corpo) {
     buttonText: botao, footerText: 'Atendimento automático',
     sections: [{ title: 'Opções', rows: rows }] };
 }
-if (/Sou o atendimento autom/i.test(_t) && /2ª via de boleto/i.test(_t)) {
+if (/Já sou Cliente/i.test(_t) && /Quero ser Cliente/i.test(_t)) {
+  _lista('RCNet', 'Começar',
+    [_row('1', 'Já sou Cliente', 'Atendimento, 2ª via, suporte'),
+     _row('2', 'Quero ser Cliente', 'Ver planos e assinar')]);
+} else if (/2ª via de boleto/i.test(_t) && /Diagnóstico da minha conexão/i.test(_t)) {
+  // Menu de servico (generico "Olá! Sou o atendimento..." ou saudando pelo nome).
   const nome = {'1':'Wi-Fi','2':'2ª via de boleto','3':'Abrir chamado','4':'Diagnóstico','5':'Falar com atendente'};
   const dsc = {'1':'Alterar nome/senha da rede','2':'Ver faturas em aberto','3':'Registrar um problema','4':'Checar o sinal da conexão','5':'Atendimento humano'};
   const re = /\*(\d)\*\s*-\s*[^\n]+/g, rows = []; let m;
