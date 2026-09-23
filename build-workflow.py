@@ -17,6 +17,10 @@ const key = data.key || {};
 const remoteJid = key.remoteJid || '';
 const phone = remoteJid.split('@')[0];
 const fromMe = !!key.fromMe;
+// ID da mensagem (wamid). Com 2+ instancias no mesmo app da Meta, a MESMA
+// mensagem chega varias vezes (a Evolution reemite por instancia + retries da
+// Meta). O Get Session usa este id para um dedup atomico: so a 1a entrega passa.
+const msgId = key.id || '';
 const msg = data.message || {};
 
 // Resposta de botao/lista PRIMEIRO, texto puro depois. Motivo: no Cloud API
@@ -66,7 +70,7 @@ if (item.event !== 'messages.upsert' || fromMe || !phone || !text || remoteJid.e
   return [];
 }
 
-return [{ json: { phone, text, instance } }];
+return [{ json: { phone, text, instance, msg_id: msgId } }];
 """
 
 # ---------------------------------------------------------------- Parse & Route
@@ -2280,7 +2284,24 @@ nodes = [
     # (o cliente resolve varias coisas ao longo do dia), entao a expiracao aqui
     # acompanha - nunca corta um atendimento que ainda valeria.
     {"parameters": {"operation": "executeQuery",
-                    "query": ("WITH expiradas AS (\n"
+                    # Dedup atomico: com 2+ instancias no mesmo app da Meta, a MESMA
+                    # mensagem chega varias vezes (reemissao por instancia + retries
+                    # da Meta), gerando resposta repetida. O INSERT ... ON CONFLICT
+                    # so deixa a 1a entrega gravar o wamid; as demais nao retornam
+                    # linha e a clausula WHERE zera a saida do node -> o fluxo para
+                    # (sem alwaysOutputData) e nao ha resposta duplicada. wamid vazio
+                    # (replay/teste) nunca e deduplicado. O GC no topo mantem a
+                    # tabela minima (janela de 1h cobre qualquer retry da Meta).
+                    "query": ("WITH dedup_gc AS (\n"
+                              "    DELETE FROM wa_msg_dedup WHERE created_at < now() - interval '1 hour'\n"
+                              "),\n"
+                              "dd AS (\n"
+                              "    INSERT INTO wa_msg_dedup (wamid)\n"
+                              "        SELECT $2 WHERE $2 <> ''\n"
+                              "    ON CONFLICT (wamid) DO NOTHING\n"
+                              "    RETURNING wamid\n"
+                              "),\n"
+                              "expiradas AS (\n"
                               "    DELETE FROM wa_sessions WHERE updated_at < now() - interval '8 hours'\n"
                               ")\n"
                               "SELECT s.step, s.data,\n"
@@ -2297,12 +2318,15 @@ nodes = [
                               "  SELECT NULL, NULL WHERE NOT EXISTS (\n"
                               "      SELECT 1 FROM wa_sessions\n"
                               "       WHERE phone = $1 AND updated_at >= now() - interval '8 hours')\n"
-                              ") s"),
-                    "options": {"queryReplacement": "={{ [$json.phone] }}"}},
+                              ") s\n"
+                              # Passa so quando esta entrega venceu o dedup (dd tem linha)
+                              # ou quando nao ha wamid para deduplicar (teste/replay).
+                              "WHERE $2 = '' OR EXISTS (SELECT 1 FROM dd)"),
+                    "options": {"queryReplacement": "={{ [$json.phone, $json.msg_id || ''] }}"}},
      "id": "pg-get", "name": "Get Session", "type": "n8n-nodes-base.postgres",
-     # O UNION ALL garante que o node devolva 1 item mesmo se o cliente for novo,
-     # impedindo que o n8n aborte silenciosamente o fluxo aqui por falta de dados.
-     "alwaysOutputData": True,
+     # SEM alwaysOutputData de proposito: numa entrega duplicada a query devolve 0
+     # linhas e o node precisa NAO emitir item, para o fluxo parar aqui. O cliente
+     # novo continua com 1 linha garantida pelo UNION ALL, entao nada quebra.
      "typeVersion": 2.4, "position": [400, 0], "credentials": PG_CRED},
 
     # Atendimento humano: se 'humano' esta ligado (o cliente pediu atendente ou

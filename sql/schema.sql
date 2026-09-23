@@ -8,6 +8,18 @@ CREATE TABLE IF NOT EXISTS wa_sessions (
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- Dedup de mensagens recebidas. Com 2+ instancias no mesmo app da Meta (ex.:
+-- atendimento + disparo), a MESMA mensagem chega varias vezes (a Evolution
+-- reemite por instancia e a Meta reentrega em retry), o que fazia o bot
+-- responder repetido. O Get Session grava aqui o wamid de forma atomica
+-- (INSERT ... ON CONFLICT): so a 1a entrega vence, as demais param o fluxo.
+-- A janela util e curta (1h cobre qualquer retry), entao a limpeza roda na
+-- propria query a cada mensagem.
+CREATE TABLE IF NOT EXISTS wa_msg_dedup (
+    wamid       TEXT PRIMARY KEY,             -- id da mensagem do WhatsApp (key.id)
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 -- Auditoria: toda operacao que toca dado do cliente fica registrada
 -- (alteracao de Wi-Fi, consulta de 2a via, abertura de chamado).
 CREATE TABLE IF NOT EXISTS wa_wifi_change_log (
