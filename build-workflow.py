@@ -2802,10 +2802,19 @@ nodes = [
     # porque a expressao do node de envio nao le binario de OUTRO node de forma
     # confiavel. Sem binario (download falhou) -> nao emite item e o envio para.
     code_node("code-boleto-b64", "Boleto Base64", r"""
-const b = $input.first().binary;
-const b64 = (b && b.data && b.data.data) ? b.data.data : '';
-if (!b64) return [];
-return [{ json: { boleto_b64: b64 } }];
+// Le o PDF baixado (binario 'data') e devolve em base64. Usa o helper oficial
+// getBinaryDataBuffer: assim funciona TAMBEM quando o n8n guarda o binario em
+// disco (N8N_DEFAULT_BINARY_DATA_MODE=filesystem), caso em que item.binary.data
+// .data vem vazio. Sem binario (download falhou) -> nao emite item, envio para.
+let buf = null;
+try { buf = await this.helpers.getBinaryDataBuffer(0, 'data'); } catch (e) { buf = null; }
+if (!buf || !buf.length) {
+  const b = $input.first().binary;
+  const inline = b && b.data && b.data.data ? b.data.data : '';
+  if (!inline) return [];
+  return [{ json: { boleto_b64: inline } }];
+}
+return [{ json: { boleto_b64: buf.toString('base64') } }];
 """, [3650, -80]),
 
     {"parameters": {

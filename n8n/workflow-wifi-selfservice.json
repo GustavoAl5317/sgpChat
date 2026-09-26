@@ -1430,7 +1430,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const b = $input.first().binary;\nconst b64 = (b && b.data && b.data.data) ? b.data.data : '';\nif (!b64) return [];\nreturn [{ json: { boleto_b64: b64 } }];"
+        "jsCode": "// Le o PDF baixado (binario 'data') e devolve em base64. Usa o helper oficial\n// getBinaryDataBuffer: assim funciona TAMBEM quando o n8n guarda o binario em\n// disco (N8N_DEFAULT_BINARY_DATA_MODE=filesystem), caso em que item.binary.data\n// .data vem vazio. Sem binario (download falhou) -> nao emite item, envio para.\nlet buf = null;\ntry { buf = await this.helpers.getBinaryDataBuffer(0, 'data'); } catch (e) { buf = null; }\nif (!buf || !buf.length) {\n  const b = $input.first().binary;\n  const inline = b && b.data && b.data.data ? b.data.data : '';\n  if (!inline) return [];\n  return [{ json: { boleto_b64: inline } }];\n}\nreturn [{ json: { boleto_b64: buf.toString('base64') } }];"
       },
       "id": "code-boleto-b64",
       "name": "Boleto Base64",
