@@ -1635,15 +1635,31 @@ if (!links.length) {
   t += linhasFat.join('\n\n');
   if (nome) t += '\n\n*Nome:* ' + nome;
   t += '\n\n_Depois de pagar, o acesso normaliza automaticamente (pode levar alguns minutos)._';
-  if (f0.codigopix) {
-    t += (ordenados.length === 1
-      ? '\n\n👇 *Código PIX* (toque na mensagem abaixo para copiar):'
-      : '\n\n👇 *Código PIX da fatura mais antiga* (a que reativa) — na mensagem abaixo:');
-  }
-  reply_text = t;
 
   pix_code = f0.codigopix || '';
   boleto_url = f0.link || '';
+  // Ordem dos meios de pagamento: PIX (copia-e-cola) -> boleto em PDF -> pagina
+  // de cobranca -> atendente. A fatura VENCIDA/com juros costuma vir do SGP sem
+  // codigopix e sem link (PDF); nesse caso a pagina de cobranca tem PIX + boleto
+  // ja atualizados. A linha digitavel NUNCA vai no texto (fica no PDF).
+  const cobranca = f0.link_cobranca || resp.link_cobranca || '';
+
+  if (pix_code) {
+    t += (ordenados.length === 1
+      ? '\n\n👇 *Código PIX* (toque na mensagem abaixo para copiar):'
+      : '\n\n👇 *Código PIX da fatura mais antiga* (a que reativa) — na mensagem abaixo:');
+    // PIX veio, mas sem o PDF: oferece a pagina de cobranca para o boleto.
+    if (!boleto_url && cobranca) t += '\n\nPara o boleto em PDF: ' + cobranca;
+  } else if (boleto_url) {
+    // Sem PIX, mas com o boleto em PDF (enviado logo apos como arquivo).
+    t += '\n\n👇 *Boleto em PDF* logo abaixo.';
+  } else if (cobranca) {
+    // Vencida sem PIX nem PDF: a pagina de cobranca resolve (PIX + boleto).
+    t += '\n\n💳 *Pague pela página segura* (PIX e boleto atualizados):\n' + cobranca;
+  } else {
+    t += '\n\nPara receber o PIX ou o boleto, digite *5* e fale com um atendente.';
+  }
+  reply_text = t;
 }
 
 // cpf/contrato para a auditoria variam com o caminho:

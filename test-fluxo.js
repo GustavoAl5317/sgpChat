@@ -672,6 +672,22 @@ check(tpix.pix === '00020101PIXTESTE12345',
 check(tpix.boleto === 'https://boleto/x', 'boleto (PDF/link) enviado separado');
 check(!/`/.test(tpix.reply), 'PIX nao vai em bloco de codigo na mensagem principal');
 
+// Fatura VENCIDA/com juros: o SGP zera codigopix e link (PDF). O bot cai na
+// pagina de cobranca (PIX + boleto ja atualizados), para o inadimplente - quem
+// mais precisa pagar - sempre receber uma forma de pagamento.
+const FATURAS_VENCIDA = { status: 1, razaoSocial: 'MAGDA',
+  link_cobranca: 'https://sgp/public/cobranca/999-ABC/', links: [
+  { fatura: 9, vencimento: _venc(-1), valor: 84.59, valor_original: 79.99, juros: 3, multa: 1,
+    linhadigitavel: '34191.09008 04299 XYZ',
+    link_cobranca: 'https://sgp/public/cobranca/999-ABC/' } ] };
+const tvenc = turn({ step: 'menu', data: JSON.stringify({ contrato: 42, cpf: '12345678909', verified_at: Date.now() }) },
+                   '2', PHONE_OK, null, FATURAS_VENCIDA);
+check(/cobranca\/999-ABC/.test(tvenc.reply),
+      'vencida sem PIX/PDF -> manda o link de cobranca no texto');
+check(!tvenc.pix && !tvenc.boleto,
+      'vencida sem PIX/PDF -> nao tenta enviar PIX nem PDF vazios');
+check(!/34191/.test(tvenc.reply), 'vencida: linha digitavel nao vai no texto');
+
 // Botao "Pagar minha fatura" (template proativo aviso_fatura): com a sessao
 // pre-semeada pelo disparo (contrato+verified_at), o toque cai direto na 2a via
 // - igualzinho a digitar 2 - sem pedir CPF.
