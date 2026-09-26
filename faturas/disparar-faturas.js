@@ -2,10 +2,11 @@
 // Disparo proativo de aviso de fatura.
 //
 // Uma vez por dia (FATURAS_HORA), varre TODOS os titulos do SGP
-// (POST /api/ura/titulos/, paginado), separa os que estao EM ABERTO e vencem
-// nos proximos FATURAS_DIAS_ANTES dias e que ainda nao foram avisados, e manda
-// para cada cliente o template oficial da Meta (FATURAS_TEMPLATE) com nome,
-// vencimento e valor. Prioriza quem vence primeiro e respeita o teto diario
+// (POST /api/ura/titulos/, paginado), separa os que estao EM ABERTO e vencem em
+// EXATAMENTE um dos dias-alvo (FATURAS_DIAS_ALVO, ex.: 5,3,2,1) e que ainda nao
+// foram avisados naquele dia-alvo, e manda para cada cliente o template oficial
+// da Meta (FATURAS_TEMPLATE) com nome, vencimento e valor. Assim a fatura recebe
+// um lembrete a cada marco (D-5, D-3, D-2, D-1). Respeita o teto diario
 // (FATURAS_TETO_DIA) - o limite de mensagens iniciadas pela empresa que a Meta
 // impoe (250/dia sem verificacao da empresa; sobe depois).
 //
@@ -38,7 +39,13 @@ const EVO_INST  = process.env.FATURAS_INSTANCE || process.env.EVOLUTION_INSTANCE
 const EVO_KEY   = process.env.EVOLUTION_API_KEY || '';
 
 const ON          = String(process.env.FATURAS_ON || 'false').trim().toLowerCase() === 'true';
-const DIAS_ANTES  = parseInt(process.env.FATURAS_DIAS_ANTES || '15', 10);
+// Avisa a fatura em CADA um destes dias antes do vencimento (um aviso por
+// dia-alvo por fatura). Ex.: "5,3,2,1" -> manda em D-5, D-3, D-2 e D-1.
+const DIAS_ALVO   = String(process.env.FATURAS_DIAS_ALVO || '5,3,2,1')
+  .split(',').map((s) => parseInt(s.trim(), 10))
+  .filter((n) => Number.isInteger(n) && n > 0)
+  .sort((a, b) => b - a);
+const DIAS_MAX    = DIAS_ALVO.length ? DIAS_ALVO[0] : 5;
 const TETO_DIA    = parseInt(process.env.FATURAS_TETO_DIA || '250', 10);
 const HORA        = String(process.env.FATURAS_HORA || '10:00').trim();
 const INTERVALO   = parseInt(process.env.FATURAS_INTERVALO_MS || '1500', 10);
@@ -80,6 +87,12 @@ function addDiasISO(iso, dias) {
   const d = new Date(iso + 'T12:00:00Z');
   d.setUTCDate(d.getUTCDate() + dias);
   return d.toISOString().slice(0, 10);
+}
+// Quantos dias faltam de `de` (hoje) ate `ate` (vencimento). Negativo = vencida.
+function diasAteISO(de, ate) {
+  const a = new Date(de + 'T12:00:00Z');
+  const b = new Date(String(ate).slice(0, 10) + 'T12:00:00Z');
+  return Math.round((b - a) / 86400000);
 }
 function isoParaBR(iso) {
   const m = String(iso || '').match(/^(\d{4})-(\d{2})-(\d{2})/);
@@ -207,29 +220,36 @@ async function garantirTabela() {
     CREATE TABLE IF NOT EXISTS wa_fatura_avisada (
       contrato          TEXT NOT NULL,
       numero_documento  TEXT NOT NULL,
+      dias_antes        INT  NOT NULL DEFAULT 0,
       vencimento        DATE,
       valor             NUMERIC(12,2),
       phone             TEXT,
       enviado_em        TIMESTAMPTZ NOT NULL DEFAULT now(),
-      PRIMARY KEY (contrato, numero_documento)
+      PRIMARY KEY (contrato, numero_documento, dias_antes)
     )`);
+  // Migracao de bases antigas: a PK era so (contrato, numero_documento) - um
+  // aviso por fatura. Agora a fatura e avisada uma vez por dia-alvo (5,3,2,1),
+  // entao o dia-alvo entra na chave. As tres instrucoes sao idempotentes.
+  await pool.query(`ALTER TABLE wa_fatura_avisada ADD COLUMN IF NOT EXISTS dias_antes INT NOT NULL DEFAULT 0`);
+  await pool.query(`ALTER TABLE wa_fatura_avisada DROP CONSTRAINT IF EXISTS wa_fatura_avisada_pkey`);
+  await pool.query(`ALTER TABLE wa_fatura_avisada ADD CONSTRAINT wa_fatura_avisada_pkey PRIMARY KEY (contrato, numero_documento, dias_antes)`);
   await pool.query(
     `CREATE INDEX IF NOT EXISTS idx_wa_fatura_avisada_venc ON wa_fatura_avisada (vencimento)`);
 }
 
 async function jaAvisados(deISO) {
   const r = await pool.query(
-    `SELECT contrato, numero_documento FROM wa_fatura_avisada WHERE vencimento >= $1`, [deISO]);
+    `SELECT contrato, numero_documento, dias_antes FROM wa_fatura_avisada WHERE vencimento >= $1`, [deISO]);
   const set = new Set();
-  for (const row of r.rows) set.add(row.contrato + '|' + row.numero_documento);
+  for (const row of r.rows) set.add(row.contrato + '|' + row.numero_documento + '|' + row.dias_antes);
   return set;
 }
 
 async function marcarAvisado(t, phone) {
   await pool.query(
-    `INSERT INTO wa_fatura_avisada (contrato, numero_documento, vencimento, valor, phone)
-     VALUES ($1,$2,$3,$4,$5) ON CONFLICT (contrato, numero_documento) DO NOTHING`,
-    [String(t.contrato), String(t.doc), t.venc, t.valor, phone]);
+    `INSERT INTO wa_fatura_avisada (contrato, numero_documento, dias_antes, vencimento, valor, phone)
+     VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (contrato, numero_documento, dias_antes) DO NOTHING`,
+    [String(t.contrato), String(t.doc), t.dias, t.venc, t.valor, phone]);
 }
 
 // Pre-semeia a sessao do bot para o telefone, para o toque no botao "Pagar
@@ -269,25 +289,28 @@ async function rodar() {
   if (!EVO_INST || !EVO_KEY) { warn('faltam credenciais da Evolution no .env'); return; }
 
   const hoje = hojeISO();
-  const limite = addDiasISO(hoje, DIAS_ANTES); // vence em ate N dias
-  log(`Rodada: hoje=${hoje}, avisando faturas em aberto que vencem ate ${limite} (${DIAS_ANTES} dias), teto=${TETO_DIA}${DRY_RUN ? ' [DRY-RUN]' : ''}`);
+  log(`Rodada: hoje=${hoje}, avisando faturas que vencem em ${DIAS_ALVO.join(', ')} dias, teto=${TETO_DIA}${DRY_RUN ? ' [DRY-RUN]' : ''}`);
 
   const titulos = await puxarTitulos();
   log(`SGP retornou ${titulos.length} titulos.`);
 
   const avisados = await jaAvisados(hoje);
 
-  // Candidatos: em aberto, vencimento entre hoje e o limite, ainda nao avisados.
+  // Candidatos: em aberto, que vencem em EXATAMENTE um dos dias-alvo (5/3/2/1) e
+  // que ainda nao foram avisados naquele dia-alvo. Assim a fatura recebe um
+  // lembrete a cada marco, sem repetir no mesmo dia (dedup por fatura+dia).
   const cand = [];
   for (const t of titulos) {
     if (String(t.status || '').toLowerCase() !== 'aberto') continue;
     const venc = String(t.dataVencimento || '').slice(0, 10);
-    if (!venc || venc < hoje || venc > limite) continue;
+    if (!venc) continue;
+    const dias = diasAteISO(hoje, venc);
+    if (!DIAS_ALVO.includes(dias)) continue;
     const doc = String(t.numeroDocumento);
     const contrato = String(t.clienteContrato);
-    if (avisados.has(contrato + '|' + doc)) continue;
+    if (avisados.has(contrato + '|' + doc + '|' + dias)) continue;
     cand.push({
-      contrato, doc, venc, valor: t.valor,
+      contrato, doc, venc, dias, valor: t.valor,
       cpf: t.clienteCpfcnpj, nome: t.clienteNome,
       pix: t.codigoPix || '', boleto: t.link || '',
     });
@@ -307,7 +330,7 @@ async function rodar() {
       continue;
     }
     if (DRY_RUN) {
-      log(`[dry] -> ${numero} | ${primeiroNome(t.nome)} | vence ${isoParaBR(t.venc)} | ${brl(t.valor)} | pix:${t.pix ? 'sim' : 'nao'} | boleto:${t.boleto ? 'sim' : 'nao'}`);
+      log(`[dry] D-${t.dias} -> ${numero} | ${primeiroNome(t.nome)} | vence ${isoParaBR(t.venc)} | ${brl(t.valor)} | pix:${t.pix ? 'sim' : 'nao'} | boleto:${t.boleto ? 'sim' : 'nao'}`);
       enviados++;
       continue;
     }
@@ -329,7 +352,7 @@ async function rodar() {
 // fatura real da janela. Nao grava nada, nao respeita teto, ignora FATURAS_ON.
 async function testeUm(numero) {
   const hoje = hojeISO();
-  const limite = addDiasISO(hoje, DIAS_ANTES);
+  const limite = addDiasISO(hoje, DIAS_MAX);
   const titulos = await puxarTitulos();
   let alvo = null;
   for (const t of titulos) {
