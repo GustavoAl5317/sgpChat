@@ -2798,11 +2798,21 @@ nodes = [
      "type": "n8n-nodes-base.httpRequest", "onError": "continueRegularOutput",
      "typeVersion": 4.2, "position": [3550, -80]},
 
+    # Passa o PDF baixado (binario 'data') para o JSON em base64. Necessario
+    # porque a expressao do node de envio nao le binario de OUTRO node de forma
+    # confiavel. Sem binario (download falhou) -> nao emite item e o envio para.
+    code_node("code-boleto-b64", "Boleto Base64", r"""
+const b = $input.first().binary;
+const b64 = (b && b.data && b.data.data) ? b.data.data : '';
+if (!b64) return [];
+return [{ json: { boleto_b64: b64 } }];
+""", [3650, -80]),
+
     {"parameters": {
         "method": "POST",
         "url": "={{ $env.EVOLUTION_API_URL }}/message/sendMedia/{{ $('Extract Inbound').first().json.instance || $env.EVOLUTION_INSTANCE }}",
         "sendBody": True, "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ number: $('Preparar Persistencia').first().json.phone, mediatype: 'document', mimetype: 'application/pdf', fileName: 'Boleto.pdf', media: $('Baixar Boleto PDF').first().binary.data.data }) }}",
+        "jsonBody": "={{ JSON.stringify({ number: $('Preparar Persistencia').first().json.phone, mediatype: 'document', mimetype: 'application/pdf', fileName: 'Boleto.pdf', media: $('Boleto Base64').first().json.boleto_b64 }) }}",
         "sendHeaders": True,
         "headerParameters": {"parameters": [{"name": "apikey", "value": "={{ $env.EVOLUTION_API_KEY }}"}]},
         "options": {"timeout": 25000}},
@@ -2904,7 +2914,8 @@ connections = {
     "Tem PIX?": {"main": [to("Evolution - Enviar PIX"), to("Tem boleto?")]},
     "Evolution - Enviar PIX": {"main": [to("Tem boleto?")]},
     "Tem boleto?": {"main": [to("Baixar Boleto PDF"), []]},
-    "Baixar Boleto PDF": {"main": [to("Evolution - Enviar Boleto")]},
+    "Baixar Boleto PDF": {"main": [to("Boleto Base64")]},
+    "Boleto Base64": {"main": [to("Evolution - Enviar Boleto")]},
 }
 
 wf = {"name": "WhatsApp Autoatendimento ISP (Evolution API + SGP)",

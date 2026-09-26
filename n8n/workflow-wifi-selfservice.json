@@ -1430,11 +1430,24 @@
     },
     {
       "parameters": {
+        "jsCode": "const b = $input.first().binary;\nconst b64 = (b && b.data && b.data.data) ? b.data.data : '';\nif (!b64) return [];\nreturn [{ json: { boleto_b64: b64 } }];"
+      },
+      "id": "code-boleto-b64",
+      "name": "Boleto Base64",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3650,
+        -80
+      ]
+    },
+    {
+      "parameters": {
         "method": "POST",
         "url": "={{ $env.EVOLUTION_API_URL }}/message/sendMedia/{{ $('Extract Inbound').first().json.instance || $env.EVOLUTION_INSTANCE }}",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ number: $('Preparar Persistencia').first().json.phone, mediatype: 'document', mimetype: 'application/pdf', fileName: 'Boleto.pdf', media: $('Baixar Boleto PDF').first().binary.data.data }) }}",
+        "jsonBody": "={{ JSON.stringify({ number: $('Preparar Persistencia').first().json.phone, mediatype: 'document', mimetype: 'application/pdf', fileName: 'Boleto.pdf', media: $('Boleto Base64').first().json.boleto_b64 }) }}",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
@@ -2098,6 +2111,17 @@
       ]
     },
     "Baixar Boleto PDF": {
+      "main": [
+        [
+          {
+            "node": "Boleto Base64",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Boleto Base64": {
       "main": [
         [
           {
