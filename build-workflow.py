@@ -2785,11 +2785,24 @@ nodes = [
      "id": "if-boleto", "name": "Tem boleto?", "type": "n8n-nodes-base.if",
      "typeVersion": 2.2, "position": [3450, 0]},
 
+    # BAIXA o PDF do boleto antes de enviar. A Evolution v2 quebra ao mandar
+    # 'document' por URL sem extensao .pdf (a URL do TSMX termina em /) com o erro
+    # "t.mimetype?.startsWith is not a function": tenta adivinhar o tipo pela URL
+    # e falha. Baixando aqui e enviando em base64, nada precisa ser adivinhado.
+    {"parameters": {
+        "method": "GET",
+        "url": "={{ $('Preparar Persistencia').first().json.boleto_url }}",
+        "options": {"response": {"response": {"responseFormat": "file", "outputPropertyName": "data"}},
+                    "timeout": 25000}},
+     "id": "http-baixar-boleto", "name": "Baixar Boleto PDF",
+     "type": "n8n-nodes-base.httpRequest", "onError": "continueRegularOutput",
+     "typeVersion": 4.2, "position": [3550, -80]},
+
     {"parameters": {
         "method": "POST",
         "url": "={{ $env.EVOLUTION_API_URL }}/message/sendMedia/{{ $('Extract Inbound').first().json.instance || $env.EVOLUTION_INSTANCE }}",
         "sendBody": True, "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ number: $('Preparar Persistencia').first().json.phone, mediatype: 'document', mimetype: 'application/pdf', fileName: 'Boleto.pdf', media: $('Preparar Persistencia').first().json.boleto_url }) }}",
+        "jsonBody": "={{ JSON.stringify({ number: $('Preparar Persistencia').first().json.phone, mediatype: 'document', mimetype: 'application/pdf', fileName: 'Boleto.pdf', media: $('Baixar Boleto PDF').first().binary.data.data }) }}",
         "sendHeaders": True,
         "headerParameters": {"parameters": [{"name": "apikey", "value": "={{ $env.EVOLUTION_API_KEY }}"}]},
         "options": {"timeout": 25000}},
@@ -2890,7 +2903,8 @@ connections = {
     "Evolution - Enviar Resposta": {"main": [to("Tem PIX?")]},
     "Tem PIX?": {"main": [to("Evolution - Enviar PIX"), to("Tem boleto?")]},
     "Evolution - Enviar PIX": {"main": [to("Tem boleto?")]},
-    "Tem boleto?": {"main": [to("Evolution - Enviar Boleto"), []]},
+    "Tem boleto?": {"main": [to("Baixar Boleto PDF"), []]},
+    "Baixar Boleto PDF": {"main": [to("Evolution - Enviar Boleto")]},
 }
 
 wf = {"name": "WhatsApp Autoatendimento ISP (Evolution API + SGP)",

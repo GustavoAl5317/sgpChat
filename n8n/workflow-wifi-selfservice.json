@@ -1406,11 +1406,35 @@
     },
     {
       "parameters": {
+        "method": "GET",
+        "url": "={{ $('Preparar Persistencia').first().json.boleto_url }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file",
+              "outputPropertyName": "data"
+            }
+          },
+          "timeout": 25000
+        }
+      },
+      "id": "http-baixar-boleto",
+      "name": "Baixar Boleto PDF",
+      "type": "n8n-nodes-base.httpRequest",
+      "onError": "continueRegularOutput",
+      "typeVersion": 4.2,
+      "position": [
+        3550,
+        -80
+      ]
+    },
+    {
+      "parameters": {
         "method": "POST",
         "url": "={{ $env.EVOLUTION_API_URL }}/message/sendMedia/{{ $('Extract Inbound').first().json.instance || $env.EVOLUTION_INSTANCE }}",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ number: $('Preparar Persistencia').first().json.phone, mediatype: 'document', mimetype: 'application/pdf', fileName: 'Boleto.pdf', media: $('Preparar Persistencia').first().json.boleto_url }) }}",
+        "jsonBody": "={{ JSON.stringify({ number: $('Preparar Persistencia').first().json.phone, mediatype: 'document', mimetype: 'application/pdf', fileName: 'Boleto.pdf', media: $('Baixar Boleto PDF').first().binary.data.data }) }}",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
@@ -2065,12 +2089,23 @@
       "main": [
         [
           {
-            "node": "Evolution - Enviar Boleto",
+            "node": "Baixar Boleto PDF",
             "type": "main",
             "index": 0
           }
         ],
         []
+      ]
+    },
+    "Baixar Boleto PDF": {
+      "main": [
+        [
+          {
+            "node": "Evolution - Enviar Boleto",
+            "type": "main",
+            "index": 0
+          }
+        ]
       ]
     }
   },
