@@ -196,7 +196,11 @@ async function enviarTemplate(numero, nome, vencBR, valorBRL, pixCode, boletoUrl
       { type: 'text', text: nome },
       { type: 'text', text: vencBR },
       { type: 'text', text: valorBRL },
-      { type: 'text', text: String(pixCode || '').replace(/\s+/g, '') },
+      // NAO remover espacos internos: o PIX EMV tem espaco no nome do recebedor
+      // (ex.: campo 59 "RC NET"). Tirar o espaco muda o tamanho do campo e quebra
+      // o CRC -> PIX invalido. So remove quebra de linha/tab (proibidos no param
+      // da Meta) e apara as pontas.
+      { type: 'text', text: String(pixCode || '').replace(/[\r\n\t]+/g, '').trim() },
     ],
   });
   const body = {
