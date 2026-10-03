@@ -50,6 +50,9 @@ const TETO_DIA    = parseInt(process.env.FATURAS_TETO_DIA || '250', 10);
 const HORA        = String(process.env.FATURAS_HORA || '10:00').trim();
 const INTERVALO   = parseInt(process.env.FATURAS_INTERVALO_MS || '1500', 10);
 const TEMPLATE    = process.env.FATURAS_TEMPLATE || 'aviso_fatura';
+// Botao URL "Pagar fatura" no template. So ligar DEPOIS que o botao estiver
+// aprovado no template da Meta; senao a Meta rejeita o envio (componente a mais).
+const BOTAO       = String(process.env.FATURAS_BOTAO || 'false').trim().toLowerCase() === 'true';
 const TEMPLATE_LG = process.env.FATURAS_TEMPLATE_LANG || 'pt_BR';
 const TZ          = process.env.TZ || 'America/Sao_Paulo';
 
@@ -182,7 +185,7 @@ async function telefoneDoContrato(contrato) {
 // Formato B: cabecalho com o BOLETO em PDF (cliente baixa) + corpo com
 // nome/vencimento/valor e o CODIGO PIX (copia e cola) numa variavel. Assim a
 // mensagem automatica ja traz tudo, sem depender de o cliente tocar em nada.
-async function enviarTemplate(numero, nome, vencBR, valorBRL, pixCode, boletoUrl) {
+async function enviarTemplate(numero, nome, vencBR, valorBRL, pixCode, boletoUrl, cobrancaUrl) {
   const components = [];
   if (boletoUrl) {
     components.push({
@@ -203,6 +206,18 @@ async function enviarTemplate(numero, nome, vencBR, valorBRL, pixCode, boletoUrl
       { type: 'text', text: String(pixCode || '').replace(/[\r\n\t]+/g, '').trim() },
     ],
   });
+  // Botao URL dinamica "Pagar fatura": o template tem a base
+  // https://rcnet.sgp.tsmx.app/public/cobranca/{{1}} e aqui passamos so o sufixo
+  // (id da cobranca). Abre a pagina de cobranca, que tem PIX com botao de copiar
+  // e boleto. So adiciona se o template tiver o botao (senao a Meta rejeita).
+  const _m = String(cobrancaUrl || '').indexOf('/public/cobranca/');
+  const cobrancaSuf = _m >= 0 ? String(cobrancaUrl).slice(_m + '/public/cobranca/'.length) : '';
+  if (BOTAO && cobrancaSuf) {
+    components.push({
+      type: 'button', sub_type: 'url', index: '0',
+      parameters: [{ type: 'text', text: cobrancaSuf }],
+    });
+  }
   const body = {
     number: numero,
     name: TEMPLATE,
@@ -316,7 +331,7 @@ async function rodar() {
     cand.push({
       contrato, doc, venc, dias, valor: t.valor,
       cpf: t.clienteCpfcnpj, nome: t.clienteNome,
-      pix: t.codigoPix || '', boleto: t.link || '',
+      pix: t.codigoPix || '', boleto: t.link || '', cobranca: t.link_cobranca || '',
     });
   }
   // Prioriza quem vence primeiro (mais urgente sob o teto diario).
@@ -338,7 +353,7 @@ async function rodar() {
       enviados++;
       continue;
     }
-    const r = await enviarTemplate(numero, primeiroNome(t.nome), isoParaBR(t.venc), brl(t.valor), t.pix, t.boleto);
+    const r = await enviarTemplate(numero, primeiroNome(t.nome), isoParaBR(t.venc), brl(t.valor), t.pix, t.boleto, t.cobranca);
     if (!r.ok) {
       falhas++;
       warn(`falha ao enviar contrato ${t.contrato} -> ${numero}: HTTP ${r.status} ${r.txt.slice(0, 200)}`);
@@ -369,7 +384,7 @@ async function testeUm(numero) {
   if (!alvo) { warn('nenhuma fatura na janela para usar de exemplo'); return; }
   const venc = isoParaBR(String(alvo.dataVencimento).slice(0, 10));
   log(`TESTE -> ${numero} | ${alvo.clienteNome} | vence ${venc} | ${brl(alvo.valor)} | template=${TEMPLATE}`);
-  const r = await enviarTemplate(numero, primeiroNome(alvo.clienteNome), venc, brl(alvo.valor), alvo.codigoPix, alvo.link);
+  const r = await enviarTemplate(numero, primeiroNome(alvo.clienteNome), venc, brl(alvo.valor), alvo.codigoPix, alvo.link, alvo.link_cobranca);
   log('Resposta da Evolution: HTTP', r.status);
   log(r.txt.slice(0, 500));
 }
