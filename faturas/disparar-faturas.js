@@ -56,6 +56,16 @@ const BOTAO       = String(process.env.FATURAS_BOTAO || 'false').trim().toLowerC
 const TEMPLATE_LG = process.env.FATURAS_TEMPLATE_LANG || 'pt_BR';
 const TZ          = process.env.TZ || 'America/Sao_Paulo';
 
+// Botao NATIVO "Copiar codigo Pix" (ORDER_DETAILS / pix_dynamic_code). Quando
+// ligado, o disparo NAO usa a Evolution: envia direto no Graph API da Meta
+// (so ele repassa o componente de botao order_details). Usa o template
+// FATURAS_TEMPLATE_PIX (criado como ORDER_DETAILS, 3 variaveis + botao).
+const BOTAO_PIX    = String(process.env.FATURAS_BOTAO_PIX || 'false').trim().toLowerCase() === 'true';
+const TEMPLATE_PIX = process.env.FATURAS_TEMPLATE_PIX || 'fatura_pagamento_pix';
+const META_TOKEN   = process.env.META_TOKEN || '';
+const META_PHONE_ID = process.env.META_PHONE_ID || '';
+const META_VER     = process.env.META_API_VER || 'v21.0';
+
 const ARGS    = process.argv.slice(2);
 const DRY_RUN = ARGS.includes('--dry-run');
 const AGORA   = ARGS.includes('--agora');
@@ -233,6 +243,118 @@ async function enviarTemplate(numero, nome, vencBR, valorBRL, pixCode, boletoUrl
   return { ok: resp.ok, status: resp.status, txt };
 }
 
+// ---- Envio NATIVO com botao Copiar Pix (Graph API, ORDER_DETAILS) ---------
+// Percorre um EMV PIX (copia e cola) como TLV (id 2 + tamanho 2 + valor) e
+// devolve um mapa id->valor do nivel pedido.
+function _tlv(str) {
+  const m = {};
+  let i = 0;
+  const s = String(str || '');
+  while (i + 4 <= s.length) {
+    const id = s.slice(i, i + 2);
+    const len = parseInt(s.slice(i + 2, i + 4), 10);
+    if (!Number.isInteger(len) || len < 0) break;
+    m[id] = s.slice(i + 4, i + 4 + len);
+    i += 4 + len;
+  }
+  return m;
+}
+function _inferKeyType(k) {
+  const s = String(k || '').trim();
+  if (!s) return '';
+  if (s.includes('@')) return 'EMAIL';
+  if (s.startsWith('+')) return 'PHONE';
+  const d = s.replace(/\D/g, '');
+  if (/^[0-9a-fA-F]{8}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{12}$/.test(s)) return 'EVP';
+  if (d.length === 11) return 'CPF';
+  if (d.length === 14) return 'CNPJ';
+  return 'EVP';
+}
+// Extrai nome do recebedor (campo 59) e a chave PIX (template 26..51, GUI
+// br.gov.bcb.pix, subcampo 01). PIX dinamico (cob por URL) nao traz chave no
+// subcampo 01 - ai key fica vazio e usamos EVP/placeholder (campos so
+// informativos; o pagamento usa o proprio `code`).
+function parseEmvPix(emv) {
+  const top = _tlv(emv);
+  const out = { merchant_name: String(top['59'] || '').trim(), key: '', key_type: '' };
+  for (let id = 26; id <= 51; id++) {
+    const k = String(id).padStart(2, '0');
+    if (!top[k]) continue;
+    const sub = _tlv(top[k]);
+    if (String(sub['00'] || '').toLowerCase().includes('br.gov.bcb.pix')) {
+      out.key = String(sub['01'] || '').trim();
+      out.key_type = _inferKeyType(out.key);
+      break;
+    }
+  }
+  return out;
+}
+function centavos(v) { return Math.max(0, Math.round((Number(v) || 0) * 100)); }
+
+// Envia o template ORDER_DETAILS direto no Graph API (a Evolution nao repassa
+// o componente de botao order_details). Monta o pedido de 1 item = valor da
+// fatura e embute o PIX copia-e-cola em pix_dynamic_code (botao nativo
+// "Copiar codigo Pix", sem WhatsApp Pay/gateway).
+async function enviarPixTemplate(numero, nome, vencBR, valorNum, pixCode, refId) {
+  const amount = { value: centavos(valorNum), offset: 100 };
+  const pk = parseEmvPix(pixCode);
+  const ref = String(refId || Date.now()).replace(/[^0-9A-Za-z._-]/g, '').slice(0, 35) || String(Date.now());
+  const order_details = {
+    reference_id: ref,
+    type: 'digital-goods',
+    payment_type: 'br',
+    payment_settings: [{
+      type: 'pix_dynamic_code',
+      pix_dynamic_code: {
+        code: String(pixCode || '').replace(/[\r\n\t]+/g, '').trim(),
+        merchant_name: pk.merchant_name || 'RCNET',
+        key: pk.key || ref,
+        key_type: pk.key_type || 'EVP',
+      },
+    }],
+    currency: 'BRL',
+    total_amount: amount,
+    order: {
+      status: 'pending',
+      tax: { value: 0, offset: 100 },
+      items: [{ retailer_id: ref, name: 'Fatura', amount, quantity: 1 }],
+      subtotal: amount,
+    },
+  };
+  const body = {
+    messaging_product: 'whatsapp',
+    to: numero,
+    type: 'template',
+    template: {
+      name: TEMPLATE_PIX,
+      language: { code: TEMPLATE_LG },
+      components: [
+        {
+          type: 'body',
+          parameters: [
+            { type: 'text', text: nome },
+            { type: 'text', text: vencBR },
+            { type: 'text', text: brl(valorNum) },
+          ],
+        },
+        {
+          type: 'button',
+          sub_type: 'order_details',
+          index: '0',
+          parameters: [{ type: 'action', action: { order_details } }],
+        },
+      ],
+    },
+  };
+  const resp = await fetch(`https://graph.facebook.com/${META_VER}/${META_PHONE_ID}/messages`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${META_TOKEN}` },
+    body: JSON.stringify(body),
+  });
+  const txt = await resp.text();
+  return { ok: resp.ok, status: resp.status, txt };
+}
+
 // ---- Persistencia ---------------------------------------------------------
 async function garantirTabela() {
   await pool.query(`
@@ -305,7 +427,9 @@ async function rodar() {
     return;
   }
   if (!SGP_URL || !SGP_TOKEN || !SGP_APP) { warn('faltam credenciais do SGP no .env'); return; }
-  if (!EVO_INST || !EVO_KEY) { warn('faltam credenciais da Evolution no .env'); return; }
+  if (BOTAO_PIX) {
+    if (!META_TOKEN || !META_PHONE_ID) { warn('FATURAS_BOTAO_PIX=true mas faltam META_TOKEN/META_PHONE_ID no .env'); return; }
+  } else if (!EVO_INST || !EVO_KEY) { warn('faltam credenciais da Evolution no .env'); return; }
 
   const hoje = hojeISO();
   log(`Rodada: hoje=${hoje}, avisando faturas que vencem em ${DIAS_ALVO.join(', ')} dias, teto=${TETO_DIA}${DRY_RUN ? ' [DRY-RUN]' : ''}`);
@@ -353,7 +477,9 @@ async function rodar() {
       enviados++;
       continue;
     }
-    const r = await enviarTemplate(numero, primeiroNome(t.nome), isoParaBR(t.venc), brl(t.valor), t.pix, t.boleto, t.cobranca);
+    const r = BOTAO_PIX
+      ? await enviarPixTemplate(numero, primeiroNome(t.nome), isoParaBR(t.venc), t.valor, t.pix, `${t.contrato}.${t.doc}.D${t.dias}`)
+      : await enviarTemplate(numero, primeiroNome(t.nome), isoParaBR(t.venc), brl(t.valor), t.pix, t.boleto, t.cobranca);
     if (!r.ok) {
       falhas++;
       warn(`falha ao enviar contrato ${t.contrato} -> ${numero}: HTTP ${r.status} ${r.txt.slice(0, 200)}`);
@@ -383,9 +509,12 @@ async function testeUm(numero) {
   }
   if (!alvo) { warn('nenhuma fatura na janela para usar de exemplo'); return; }
   const venc = isoParaBR(String(alvo.dataVencimento).slice(0, 10));
-  log(`TESTE -> ${numero} | ${alvo.clienteNome} | vence ${venc} | ${brl(alvo.valor)} | template=${TEMPLATE}`);
-  const r = await enviarTemplate(numero, primeiroNome(alvo.clienteNome), venc, brl(alvo.valor), alvo.codigoPix, alvo.link, alvo.link_cobranca);
-  log('Resposta da Evolution: HTTP', r.status);
+  const tmpl = BOTAO_PIX ? TEMPLATE_PIX : TEMPLATE;
+  log(`TESTE -> ${numero} | ${alvo.clienteNome} | vence ${venc} | ${brl(alvo.valor)} | template=${tmpl}${BOTAO_PIX ? ' [PIX nativo/Graph]' : ''}`);
+  const r = BOTAO_PIX
+    ? await enviarPixTemplate(numero, primeiroNome(alvo.clienteNome), venc, alvo.valor, alvo.codigoPix, `${alvo.clienteContrato}.${alvo.numeroDocumento}.teste`)
+    : await enviarTemplate(numero, primeiroNome(alvo.clienteNome), venc, brl(alvo.valor), alvo.codigoPix, alvo.link, alvo.link_cobranca);
+  log(`Resposta: HTTP ${r.status}`);
   log(r.txt.slice(0, 500));
 }
 

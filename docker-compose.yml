@@ -214,6 +214,13 @@ services:
       FATURAS_INTERVALO_MS: ${FATURAS_INTERVALO_MS:-1500}
       FATURAS_TEMPLATE: ${FATURAS_TEMPLATE:-aviso_fatura}
       FATURAS_TEMPLATE_LANG: ${FATURAS_TEMPLATE_LANG:-pt_BR}
+      # Botao nativo "Copiar codigo Pix" (ORDER_DETAILS). Quando true, envia
+      # direto no Graph API da Meta (nao pela Evolution) usando o template PIX.
+      FATURAS_BOTAO_PIX: ${FATURAS_BOTAO_PIX:-false}
+      FATURAS_TEMPLATE_PIX: ${FATURAS_TEMPLATE_PIX:-fatura_pagamento_pix}
+      META_TOKEN: ${META_TOKEN:-}
+      META_PHONE_ID: ${META_PHONE_ID:-}
+      META_API_VER: ${META_API_VER:-v21.0}
       TZ: America/Sao_Paulo
     networks: [botsgp]
 
