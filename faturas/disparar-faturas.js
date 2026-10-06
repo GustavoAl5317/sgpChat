@@ -281,11 +281,17 @@ function parseEmvPix(emv) {
     const k = String(id).padStart(2, '0');
     if (!top[k]) continue;
     const sub = _tlv(top[k]);
-    if (String(sub['00'] || '').toLowerCase().includes('br.gov.bcb.pix')) {
-      out.key = String(sub['01'] || '').trim();
-      out.key_type = _inferKeyType(out.key);
-      break;
-    }
+    if (!String(sub['00'] || '').toLowerCase().includes('br.gov.bcb.pix')) continue;
+    const chave = String(sub['01'] || '').trim(); // chave estatica (CPF/CNPJ/email/tel/EVP)
+    if (chave) { out.key = chave; out.key_type = _inferKeyType(chave); return out; }
+    // PIX dinamico (cob por URL no subcampo 25): nao traz chave. A Meta so valida
+    // o FORMATO de key/key_type (campos informativos; o pagamento usa o `code`).
+    // Usa o UUID da URL como EVP (formato valido). Se nao achar, deixa vazio e o
+    // envio omite key/key_type.
+    const uuid = String(sub['25'] || top[k] || '')
+      .match(/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/);
+    if (uuid) { out.key = uuid[0]; out.key_type = 'EVP'; return out; }
+    break;
   }
   return out;
 }
@@ -299,18 +305,20 @@ async function enviarPixTemplate(numero, nome, vencBR, valorNum, pixCode, refId)
   const amount = { value: centavos(valorNum), offset: 100 };
   const pk = parseEmvPix(pixCode);
   const ref = String(refId || Date.now()).replace(/[^0-9A-Za-z._-]/g, '').slice(0, 35) || String(Date.now());
+  const pdc = {
+    code: String(pixCode || '').replace(/[\r\n\t]+/g, '').trim(),
+    merchant_name: pk.merchant_name || 'RCNET',
+  };
+  // So envia key/key_type quando ha uma chave de formato valido (a Meta valida o
+  // formato). PIX dinamico sem chave -> omite os dois.
+  if (pk.key && pk.key_type) { pdc.key = pk.key; pdc.key_type = pk.key_type; }
   const order_details = {
     reference_id: ref,
     type: 'digital-goods',
     payment_type: 'br',
     payment_settings: [{
       type: 'pix_dynamic_code',
-      pix_dynamic_code: {
-        code: String(pixCode || '').replace(/[\r\n\t]+/g, '').trim(),
-        merchant_name: pk.merchant_name || 'RCNET',
-        key: pk.key || ref,
-        key_type: pk.key_type || 'EVP',
-      },
+      pix_dynamic_code: pdc,
     }],
     currency: 'BRL',
     total_amount: amount,
