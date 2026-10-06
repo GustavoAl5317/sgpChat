@@ -301,7 +301,7 @@ function centavos(v) { return Math.max(0, Math.round((Number(v) || 0) * 100)); }
 // o componente de botao order_details). Monta o pedido de 1 item = valor da
 // fatura e embute o PIX copia-e-cola em pix_dynamic_code (botao nativo
 // "Copiar codigo Pix", sem WhatsApp Pay/gateway).
-async function enviarPixTemplate(numero, nome, vencBR, valorNum, pixCode, refId) {
+async function enviarPixTemplate(numero, nome, vencBR, valorNum, pixCode, refId, boletoUrl) {
   const amount = { value: centavos(valorNum), offset: 100 };
   const pk = parseEmvPix(pixCode);
   const ref = String(refId || Date.now()).replace(/[^0-9A-Za-z._-]/g, '').slice(0, 35) || String(Date.now());
@@ -336,24 +336,32 @@ async function enviarPixTemplate(numero, nome, vencBR, valorNum, pixCode, refId)
     template: {
       name: TEMPLATE_PIX,
       language: { code: TEMPLATE_LG },
-      components: [
-        {
-          type: 'body',
-          parameters: [
-            { type: 'text', text: nome },
-            { type: 'text', text: vencBR },
-            { type: 'text', text: brl(valorNum) },
-          ],
-        },
-        {
-          type: 'button',
-          sub_type: 'order_details',
-          index: '0',
-          parameters: [{ type: 'action', action: { order_details } }],
-        },
-      ],
+      components: [],
     },
   };
+  // Cabecalho com o boleto em PDF (so se o template tiver header DOCUMENT e
+  // houver link). A Meta baixa o link e checa o content-type application/pdf -
+  // o link do SGP e PDF mesmo sem extensao .pdf.
+  if (boletoUrl) {
+    body.template.components.push({
+      type: 'header',
+      parameters: [{ type: 'document', document: { link: boletoUrl, filename: 'Fatura.pdf' } }],
+    });
+  }
+  body.template.components.push({
+    type: 'body',
+    parameters: [
+      { type: 'text', text: nome },
+      { type: 'text', text: vencBR },
+      { type: 'text', text: brl(valorNum) },
+    ],
+  });
+  body.template.components.push({
+    type: 'button',
+    sub_type: 'order_details',
+    index: '0',
+    parameters: [{ type: 'action', action: { order_details } }],
+  });
   const resp = await fetch(`https://graph.facebook.com/${META_VER}/${META_PHONE_ID}/messages`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${META_TOKEN}` },
@@ -486,7 +494,7 @@ async function rodar() {
       continue;
     }
     const r = BOTAO_PIX
-      ? await enviarPixTemplate(numero, primeiroNome(t.nome), isoParaBR(t.venc), t.valor, t.pix, `${t.contrato}.${t.doc}.D${t.dias}`)
+      ? await enviarPixTemplate(numero, primeiroNome(t.nome), isoParaBR(t.venc), t.valor, t.pix, `${t.contrato}.${t.doc}.D${t.dias}`, t.boleto)
       : await enviarTemplate(numero, primeiroNome(t.nome), isoParaBR(t.venc), brl(t.valor), t.pix, t.boleto, t.cobranca);
     if (!r.ok) {
       falhas++;
@@ -520,7 +528,7 @@ async function testeUm(numero) {
   const tmpl = BOTAO_PIX ? TEMPLATE_PIX : TEMPLATE;
   log(`TESTE -> ${numero} | ${alvo.clienteNome} | vence ${venc} | ${brl(alvo.valor)} | template=${tmpl}${BOTAO_PIX ? ' [PIX nativo/Graph]' : ''}`);
   const r = BOTAO_PIX
-    ? await enviarPixTemplate(numero, primeiroNome(alvo.clienteNome), venc, alvo.valor, alvo.codigoPix, `${alvo.clienteContrato}.${alvo.numeroDocumento}.teste`)
+    ? await enviarPixTemplate(numero, primeiroNome(alvo.clienteNome), venc, alvo.valor, alvo.codigoPix, `${alvo.clienteContrato}.${alvo.numeroDocumento}.teste`, alvo.link)
     : await enviarTemplate(numero, primeiroNome(alvo.clienteNome), venc, brl(alvo.valor), alvo.codigoPix, alvo.link, alvo.link_cobranca);
   log(`Resposta: HTTP ${r.status}`);
   log(r.txt.slice(0, 500));
