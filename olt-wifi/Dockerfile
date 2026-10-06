@@ -11,6 +11,9 @@ USER olt
 WORKDIR /app
 
 COPY --chown=olt:olt servico.py /app/servico.py
+# Diagnostico so-leitura (show/display). Nao entra no CMD; roda sob demanda via
+# `docker compose run --rm olt-wifi python3 olt-show.py "show ..."`.
+COPY --chown=olt:olt olt-show.py /app/olt-show.py
 
 EXPOSE 8080
 CMD ["python", "-u", "/app/servico.py"]
