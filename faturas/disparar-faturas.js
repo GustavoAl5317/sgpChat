@@ -62,6 +62,9 @@ const TZ          = process.env.TZ || 'America/Sao_Paulo';
 // FATURAS_TEMPLATE_PIX (criado como ORDER_DETAILS, 3 variaveis + botao).
 const BOTAO_PIX    = String(process.env.FATURAS_BOTAO_PIX || 'false').trim().toLowerCase() === 'true';
 const TEMPLATE_PIX = process.env.FATURAS_TEMPLATE_PIX || 'fatura_pagamento_pix';
+// Template sem cabecalho de documento (fallback quando o boleto nao e PDF, ex.:
+// titulo pago/cancelado devolve pagina HTML). Precisa estar aprovado tambem.
+const TEMPLATE_PIX_NOHDR = process.env.FATURAS_TEMPLATE_PIX_SEMPDF || 'fatura_pagamento_pix';
 const META_TOKEN   = process.env.META_TOKEN || '';
 const META_PHONE_ID = process.env.META_PHONE_ID || '';
 const META_VER     = process.env.META_API_VER || 'v21.0';
@@ -297,6 +300,36 @@ function parseEmvPix(emv) {
 }
 function centavos(v) { return Math.max(0, Math.round((Number(v) || 0) * 100)); }
 
+// Baixa o boleto do SGP e SOBE como midia na Meta, devolvendo o media id. Por
+// link nao da: o link do SGP nao termina em .pdf e a Meta classifica o header
+// por extensao (erro #132012 "expected DOCUMENT, received UNKNOWN"). Alem disso
+// titulo pago/cancelado devolve pagina HTML em vez de PDF - por isso so sobe se
+// os bytes comecarem com %PDF; senao devolve null (o envio cai no template sem
+// cabecalho).
+async function uploadBoletoMedia(url) {
+  if (!url || !META_PHONE_ID || !META_TOKEN) return null;
+  let buf;
+  try {
+    const r = await fetch(url);
+    if (!r.ok) return null;
+    buf = Buffer.from(await r.arrayBuffer());
+  } catch (_) { return null; }
+  if (buf.slice(0, 5).toString('latin1') !== '%PDF-') return null;
+  try {
+    const fd = new FormData();
+    fd.append('messaging_product', 'whatsapp');
+    fd.append('type', 'application/pdf');
+    fd.append('file', new Blob([buf], { type: 'application/pdf' }), 'Fatura.pdf');
+    const resp = await fetch(`https://graph.facebook.com/${META_VER}/${META_PHONE_ID}/media`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${META_TOKEN}` },
+      body: fd,
+    });
+    const j = await resp.json().catch(() => null);
+    return j && j.id ? j.id : null;
+  } catch (_) { return null; }
+}
+
 // Envia o template ORDER_DETAILS direto no Graph API (a Evolution nao repassa
 // o componente de botao order_details). Monta o pedido de 1 item = valor da
 // fatura e embute o PIX copia-e-cola em pix_dynamic_code (botao nativo
@@ -329,23 +362,24 @@ async function enviarPixTemplate(numero, nome, vencBR, valorNum, pixCode, refId,
       subtotal: amount,
     },
   };
+  // Tenta anexar o boleto PDF como midia (id). Se conseguir, usa o template COM
+  // cabecalho; senao (link HTML/indisponivel), cai no template SEM cabecalho,
+  // pra nunca falhar o envio por causa do boleto.
+  const mediaId = await uploadBoletoMedia(boletoUrl);
   const body = {
     messaging_product: 'whatsapp',
     to: numero,
     type: 'template',
     template: {
-      name: TEMPLATE_PIX,
+      name: mediaId ? TEMPLATE_PIX : TEMPLATE_PIX_NOHDR,
       language: { code: TEMPLATE_LG },
       components: [],
     },
   };
-  // Cabecalho com o boleto em PDF (so se o template tiver header DOCUMENT e
-  // houver link). A Meta baixa o link e checa o content-type application/pdf -
-  // o link do SGP e PDF mesmo sem extensao .pdf.
-  if (boletoUrl) {
+  if (mediaId) {
     body.template.components.push({
       type: 'header',
-      parameters: [{ type: 'document', document: { link: boletoUrl, filename: 'Fatura.pdf' } }],
+      parameters: [{ type: 'document', document: { id: mediaId, filename: 'Fatura.pdf' } }],
     });
   }
   body.template.components.push({
